@@ -1,24 +1,34 @@
 require("dotenv").config();
 
-function required(name) {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${name}`);
+const required = [
+  "JWT_SECRET",
+  "KASA_DB_HOST",
+  "KASA_DB_PORT",
+  "KASA_DB_NAME",
+  "KASA_DB_USER",
+  "KASA_DB_PASS"
+];
+
+for (const key of required) {
+  if (!process.env[key]) {
+    throw new Error(`Missing required environment variable: ${key}`);
   }
-  return value;
 }
 
 module.exports = {
   nodeEnv: process.env.NODE_ENV || "development",
   port: Number(process.env.PORT || 10000),
-  frontendUrl: process.env.FRONTEND_URL || "http://localhost:5173",
-  jwtSecret: required("JWT_SECRET"),
+
+  frontendUrl: process.env.FRONTEND_URL || "*",
+
+  jwtSecret: process.env.JWT_SECRET,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
-  db: {
-    host: required("KASA_DB_HOST"),
+
+  database: {
+    host: process.env.KASA_DB_HOST,
     port: Number(process.env.KASA_DB_PORT || 4000),
-    database: required("KASA_DB_NAME"),
-    user: required("KASA_DB_USER"),
-    password: required("KASA_DB_PASS")
+    name: process.env.KASA_DB_NAME,
+    user: process.env.KASA_DB_USER,
+    password: process.env.KASA_DB_PASS
   }
 };
