@@ -1,0 +1,26 @@
+{
+  "name": "kasa-ilaya-resort-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Kasa Ilaya Resort Node.js/Express backend for Render + TiDB Cloud",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "health": "node -e \"fetch('http://localhost:'+(process.env.PORT||10000)+'/api/health').then(r=>r.text()).then(console.log).catch(e=>{console.error(e);process.exit(1)})\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.14.4",
+    "morgan": "^1.10.0",
+    "uuid": "^11.1.0"
+  }
+}
