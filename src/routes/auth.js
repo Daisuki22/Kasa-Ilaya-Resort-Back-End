@@ -20,6 +20,9 @@ const { sendMail } = require('../services/mail');
 
 const router = express.Router();
 
+const registrationOtp = () =>
+  config.sampleRegistrationOtp || randomOtp();
+
 /* =========================================================
    VALIDATION HELPERS
 ========================================================= */
@@ -703,7 +706,7 @@ router.post('/', async (req, res, next) => {
 
       /* Create OTP */
 
-      const otp = randomOtp();
+      const otp = registrationOtp();
 
       await pool.query(
         `UPDATE registration_otps
@@ -781,7 +784,8 @@ router.post('/', async (req, res, next) => {
         mail_error: mail.sent === false
           ? (mail.error || 'Please check SMTP settings.')
           : null,
-        verification_provider: 'server'
+        verification_provider: 'server',
+        sample_registration_otp: config.sampleRegistrationOtp || undefined
       });
     }
 
@@ -846,7 +850,7 @@ router.post('/', async (req, res, next) => {
 
       /* Generate new OTP */
 
-      const otp = randomOtp();
+      const otp = registrationOtp();
 
       await pool.query(
         `INSERT INTO registration_otps
@@ -907,7 +911,8 @@ router.post('/', async (req, res, next) => {
         mail_error: mail.sent === false
           ? (mail.error || 'Please check SMTP settings.')
           : null,
-        verification_provider: 'server'
+        verification_provider: 'server',
+        sample_registration_otp: config.sampleRegistrationOtp || undefined
       });
     }
 
