@@ -767,6 +767,13 @@ router.post('/', async (req, res, next) => {
         'registration'
       );
 
+      if (mail.sent === false) {
+        return res.status(502).json({
+          error: `Verification email could not be sent. ${mail.error || 'Please check SMTP settings.'}`,
+          mail_sent: false
+        });
+      }
+
       return res.status(
         existingPendingRows[0]
           ? 200
@@ -896,6 +903,13 @@ router.post('/', async (req, res, next) => {
         `,
         'registration'
       );
+
+      if (mail.sent === false) {
+        return res.status(502).json({
+          error: `Verification email could not be sent. ${mail.error || 'Please check SMTP settings.'}`,
+          mail_sent: false
+        });
+      }
 
       return res.json({
         success: true,
@@ -1337,7 +1351,7 @@ router.post('/', async (req, res, next) => {
           ]
         );
 
-        await sendMail(
+        const mail = await sendMail(
           user.email,
           'Kasa Ilaya Resort password reset code',
           `
@@ -1352,6 +1366,13 @@ router.post('/', async (req, res, next) => {
           `,
           'reset'
         );
+
+        if (mail.sent === false) {
+          return res.status(502).json({
+            error: `Password reset email could not be sent. ${mail.error || 'Please check SMTP settings.'}`,
+            mail_sent: false
+          });
+        }
       }
 
       return res.json({

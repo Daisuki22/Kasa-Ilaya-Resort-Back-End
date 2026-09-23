@@ -27,3 +27,17 @@ services:
         value: 7d
       - key: KASA_GOOGLE_CLIENT_ID
         value: 834800627360-tj8514jf4tqk46oodm358bu9thvub21f.apps.googleusercontent.com
+      - key: KASA_MAIL_ENABLED
+        value: "true"
+      - key: KASA_SMTP_HOST
+        value: smtp-relay.brevo.com
+      - key: KASA_SMTP_PORT
+        value: "587"
+      - key: KASA_SMTP_USER
+        sync: false
+      - key: KASA_SMTP_PASS
+        sync: false
+      - key: KASA_MAIL_FROM_EMAIL
+        sync: false
+      - key: KASA_MAIL_FROM_NAME
+        value: Kasa Ilaya Resort
