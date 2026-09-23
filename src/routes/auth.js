@@ -777,7 +777,7 @@ router.post('/', async (req, res, next) => {
         pending: true,
         email,
         phone: phone.replace(/\D/g, ''),
-        mail_sent: mail.sent !== false,
+        mail_sent: mail.sent === true,
         mail_error: mail.sent === false
           ? (mail.error || 'Please check SMTP settings.')
           : null,
