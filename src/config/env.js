@@ -3,10 +3,11 @@ require('dotenv').config();
 const required = ['JWT_SECRET','KASA_DB_HOST','KASA_DB_PORT','KASA_DB_NAME','KASA_DB_USER','KASA_DB_PASS'];
 for (const key of required) if (!process.env[key]) throw new Error(`Missing required environment variable: ${key}`);
 
+const defaultGoogleClientId = '834800627360-tj8514jf4tqk46oodm358bu9thvub21f.apps.googleusercontent.com';
 const googleClientId = process.env.KASA_GOOGLE_CLIENT_ID
   || process.env.GOOGLE_CLIENT_ID
   || process.env.VITE_GOOGLE_CLIENT_ID
-  || '';
+  || defaultGoogleClientId;
 
 module.exports = {
   nodeEnv: process.env.NODE_ENV || 'development',
