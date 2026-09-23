@@ -767,13 +767,6 @@ router.post('/', async (req, res, next) => {
         'registration'
       );
 
-      if (mail.sent === false) {
-        return res.status(502).json({
-          error: `Verification email could not be sent. ${mail.error || 'Please check SMTP settings.'}`,
-          mail_sent: false
-        });
-      }
-
       return res.status(
         existingPendingRows[0]
           ? 200
@@ -785,6 +778,9 @@ router.post('/', async (req, res, next) => {
         email,
         phone: phone.replace(/\D/g, ''),
         mail_sent: mail.sent !== false,
+        mail_error: mail.sent === false
+          ? (mail.error || 'Please check SMTP settings.')
+          : null,
         verification_provider: 'server'
       });
     }
@@ -904,17 +900,13 @@ router.post('/', async (req, res, next) => {
         'registration'
       );
 
-      if (mail.sent === false) {
-        return res.status(502).json({
-          error: `Verification email could not be sent. ${mail.error || 'Please check SMTP settings.'}`,
-          mail_sent: false
-        });
-      }
-
       return res.json({
         success: true,
         email,
         mail_sent: mail.sent !== false,
+        mail_error: mail.sent === false
+          ? (mail.error || 'Please check SMTP settings.')
+          : null,
         verification_provider: 'server'
       });
     }
