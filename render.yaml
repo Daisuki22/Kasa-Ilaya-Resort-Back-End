@@ -25,3 +25,5 @@ services:
         sync: false
       - key: JWT_EXPIRES_IN
         value: 7d
+      - key: KASA_GOOGLE_CLIENT_ID
+        value: 834800627360-tj8514jf4tqk46oodm358bu9thvub21f.apps.googleusercontent.com
