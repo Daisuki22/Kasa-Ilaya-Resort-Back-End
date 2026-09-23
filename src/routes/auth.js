@@ -1,156 +1,22 @@
-const express = require("express");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-const { pool } = require("../config/database");
-const config = require("../config/env");
-const { id } = require("../utils/id");
-
-const router = express.Router();
-
-function publicUser(user) {
-  return {
-    id: user.id,
-    email: user.email,
-    full_name: user.full_name,
-    birth_date: user.birth_date,
-    phone: user.phone,
-    profile_image_url: user.profile_image_url,
-    role: user.role,
-    is_verified: !!user.is_verified,
-    app_id: user.app_id,
-    app_role: user.app_role
-  };
-}
-
-router.post("/register", async (req, res, next) => {
-  try {
-    const { email, full_name, birth_date = null, phone = null, password } = req.body;
-
-    if (!email || !full_name || !password) {
-      return res.status(400).json({
-        success: false,
-        message: "email, full_name and password are required."
-      });
-    }
-
-    if (password.length < 8) {
-      return res.status(400).json({
-        success: false,
-        message: "Password must contain at least 8 characters."
-      });
-    }
-
-    const normalizedEmail = String(email).trim().toLowerCase();
-    const [existing] = await pool.query(
-      "SELECT id FROM users WHERE email = ? LIMIT 1",
-      [normalizedEmail]
-    );
-
-    if (existing.length) {
-      return res.status(409).json({
-        success: false,
-        message: "An account with this email already exists."
-      });
-    }
-
-    const passwordHash = await bcrypt.hash(password, 12);
-    const userId = id();
-
-    await pool.query(
-      `INSERT INTO users
-       (id, created_date, updated_date, email, full_name, birth_date, phone,
-        role, password_hash, is_verified, app_id, is_service, app_role)
-       VALUES (?, NOW(), NOW(), ?, ?, ?, ?, 'guest', ?, 1, 'local-kasa-ilaya', 0, 'guest')`,
-      [userId, normalizedEmail, full_name, birth_date, phone, passwordHash]
-    );
-
-    const [rows] = await pool.query(
-      "SELECT * FROM users WHERE id = ? LIMIT 1",
-      [userId]
-    );
-
-    res.status(201).json({
-      success: true,
-      user: publicUser(rows[0])
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.post("/login", async (req, res, next) => {
-  try {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        message: "Email and password are required."
-      });
-    }
-
-    const normalizedEmail = String(email).trim().toLowerCase();
-    const [rows] = await pool.query(
-      "SELECT * FROM users WHERE email = ? LIMIT 1",
-      [normalizedEmail]
-    );
-
-    if (!rows.length) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid email or password."
-      });
-    }
-
-    const user = rows[0];
-
-    if (user.disabled) {
-      return res.status(403).json({
-        success: false,
-        message: "This account is disabled."
-      });
-    }
-
-    if (!user.password_hash) {
-      return res.status(401).json({
-        success: false,
-        message: "This account does not have a password configured."
-      });
-    }
-
-    const valid = await bcrypt.compare(password, user.password_hash);
-
-    if (!valid) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid email or password."
-      });
-    }
-
-    await pool.query(
-      "UPDATE users SET last_login_at = NOW(), updated_date = NOW() WHERE id = ?",
-      [user.id]
-    );
-
-    const token = jwt.sign(
-      {
-        sub: user.id,
-        email: user.email,
-        role: user.role,
-        full_name: user.full_name
-      },
-      config.jwtSecret,
-      { expiresIn: config.jwtExpiresIn }
-    );
-
-    res.json({
-      success: true,
-      token,
-      user: publicUser(user)
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-module.exports = router;
+const express=require('express'); const bcrypt=require('bcryptjs'); const jwt=require('jsonwebtoken'); const crypto=require('crypto');
+const config=require('../config/env'); const {pool}=require('../config/database'); const {id,now,sha256,randomOtp,publicUser,findUserById,findUserByEmail}=require('../utils'); const {auth,requireAuth}=require('../middleware/auth'); const {sendMail}=require('../services/mail');
+const router=express.Router();
+const emailOk=e=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e); const phoneOk=p=>/^(09\d{9}|639\d{9})$/.test(String(p).replace(/\D/g,''));
+function issue(res,user){const token=jwt.sign({sub:user.id,role:user.role,app_role:user.app_role},config.jwtSecret,{expiresIn:config.jwtExpiresIn});res.cookie?.('kasa_token',token,{httpOnly:true,secure:config.nodeEnv==='production',sameSite:'none',maxAge:7*86400000});return token;}
+function captcha(){const a=crypto.randomInt(2,13),b=crypto.randomInt(1,10),op=crypto.randomInt(0,2)?'+':'-';const x=op==='-'&&b>a?b:a,y=op==='-'&&b>a?a:b;return {question:`${x} ${op} ${y}`,answer:op==='+'?x+y:x-y};}
+const captchaStore=new Map();
+router.get('/',async(req,res,next)=>{try{const action=req.query.action||'me'; if(action==='me'){if(!req.user)return res.status(401).json({error:'Not authenticated.'});return res.json(req.publicUser);} if(action==='google-config')return res.json({enabled:!!config.googleClientId,client_id:config.googleClientId||null}); if(action==='firebase-config')return res.json({enabled:false}); if(action==='captcha-challenge'){const purpose=['login','register','reset'].includes(req.query.purpose)?req.query.purpose:'login';const c=captcha();const key=`${req.ip}:${purpose}`;captchaStore.set(key,{...c,expires:Date.now()+600000});return res.json({success:true,purpose,question:c.question,expires_in_seconds:600});} return res.status(405).json({error:'Unsupported auth action.'});}catch(e){next(e);}});
+router.post('/',async(req,res,next)=>{try{const action=req.query.action||'';const p=req.body||{};
+ if(action==='verify-captcha'){const purpose=['login','register','reset'].includes(p.purpose)?p.purpose:'login';const key=`${req.ip}:${purpose}`;const c=captchaStore.get(key);if(!c||c.expires<Date.now())return res.status(422).json({success:false,verified:false,error:'Captcha expired. Please request a new challenge.'});if(Number(p.answer)!==c.answer)return res.status(422).json({success:false,verified:false,error:'Captcha answer is incorrect.'});captchaStore.delete(key);req.app.locals.captchaVerified??=new Map();req.app.locals.captchaVerified.set(`${req.ip}:${purpose}`,Date.now()+600000);return res.json({success:true,verified:true,purpose,expires_in_seconds:600});}
+ if(action==='login'){const email=String(p.email||'').trim().toLowerCase(),password=String(p.password||'');if(!email||!password)return res.status(422).json({error:'Email and password are required.'});if(!emailOk(email))return res.status(422).json({error:'Please enter a valid email address.'});const u=await findUserByEmail(email);if(!u||!u.password_hash||!(await bcrypt.compare(password,u.password_hash)))return res.status(401).json({error:'Invalid email or password.'});if(!u.is_verified)return res.status(403).json({error:'Please verify your email address before signing in.',code:'email_not_verified'});if(u.disabled)return res.status(403).json({error:'This account is disabled.'});issue(res,u);return res.json({success:true,next_url:p.next_url||'/',user:publicUser(u)});}
+ if(action==='logout'){res.clearCookie('kasa_token');return res.json({success:true,redirect_url:p.redirect_url||'/'});}
+ if(action==='register'){let fullName=String(p.full_name||'').trim()||[p.first_name,p.middle_name,p.last_name].filter(Boolean).join(' ').trim();const email=String(p.email||'').trim().toLowerCase(),phone=String(p.phone||'').trim(),password=String(p.password||'');if(!fullName||!email||!phone||!password)return res.status(422).json({error:'Full name, email, phone number, and password are required.'});if(!emailOk(email))return res.status(422).json({error:'Please enter a valid email address.'});if(password.length<8)return res.status(422).json({error:'Password must be at least 8 characters.'});if(!phoneOk(phone))return res.status(422).json({error:'Please enter a valid Philippine mobile number using 09XXXXXXXXX or 639XXXXXXXXX.'});if(await findUserByEmail(email))return res.status(409).json({error:'An account with that email already exists.'});const pendingId=id('pending'),n=now(),hash=await bcrypt.hash(password,12);await pool.query(`INSERT INTO pending_registrations (id,created_date,updated_date,email,full_name,birth_date,phone,password_hash,role,app_id,app_role) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE full_name=VALUES(full_name),birth_date=VALUES(birth_date),phone=VALUES(phone),password_hash=VALUES(password_hash),updated_date=VALUES(updated_date)`,[pendingId,n,n,email,fullName,p.birth_date||null,phone,hash,'guest','local-kasa-ilaya','guest']);const otp=randomOtp();await pool.query('INSERT INTO registration_otps (id,pending_registration_id,otp_hash,purpose,attempts,created_date,expires_at) VALUES (?,?,?,?,?,?,?)',[id('otp'),pendingId,sha256(otp),'registration',0,n,new Date(Date.now()+300000).toISOString().slice(0,19).replace('T',' ')]);const mail=await sendMail(email,'Kasa Ilaya Resort verification code',`<p>Hello ${fullName.replace(/</g,'&lt;')}</p><p>Your verification code is <strong>${otp}</strong>. It expires in 5 minutes.</p>`,'registration');return res.status(201).json({success:true,next_url:p.next_url||'/',pending:true,email,phone:phone.replace(/\D/g,''),mail_sent:mail.sent!==false,verification_provider:'server'});}
+ if(action==='verify-registration-otp'){const email=String(p.email||'').trim().toLowerCase(),otp=String(p.otp||'').replace(/\D/g,'');const [r]=await pool.query('SELECT * FROM registration_otps WHERE purpose=? AND used_at IS NULL ORDER BY created_date DESC',[ 'registration']);const rec=r.find(x=>x.pending_registration_id&&x.otp_hash===sha256(otp));if(!rec||rec.expires_at<new Date())return res.status(401).json({error:'Invalid verification code.'});const [pr]=await pool.query('SELECT * FROM pending_registrations WHERE id=? AND email=?',[rec.pending_registration_id,email]);const pending=pr[0];if(!pending)return res.status(404).json({error:'Pending registration not found.'});const userId=id('user');const n=now();await pool.query('START TRANSACTION');try{await pool.query('UPDATE registration_otps SET used_at=?,verified_at=? WHERE id=?',[n,n,rec.id]);await pool.query(`INSERT INTO users (id,created_date,updated_date,email,full_name,birth_date,phone,role,password_hash,disabled,is_verified,app_id,is_service,app_role) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,[userId,n,n,pending.email,pending.full_name,pending.birth_date,pending.phone,'guest',pending.password_hash,0,1,pending.app_id||'local-kasa-ilaya',0,'guest']);await pool.query('DELETE FROM pending_registrations WHERE id=?',[pending.id]);await pool.query('COMMIT');return res.json({success:true});}catch(e){await pool.query('ROLLBACK');throw e;}}
+ if(action==='update-me'){if(!req.user)return res.status(401).json({error:'Not authenticated.'});const fields=[],vals=[];for(const f of ['full_name','email','phone','profile_image_url'])if(Object.prototype.hasOwnProperty.call(p,f)){fields.push(`${f}=?`);vals.push(f==='email'?String(p[f]).trim().toLowerCase():(p[f]||null));}if(!fields.length)return res.json(req.publicUser);fields.push('updated_date=?');vals.push(now(),req.user.id);await pool.query(`UPDATE users SET ${fields.join(',')} WHERE id=?`,vals);return res.json(publicUser(await findUserById(req.user.id)));}
+ if(action==='change-password'){if(!req.user)return res.status(401).json({error:'Not authenticated.'});const current=String(p.current_password||''),next=String(p.new_password||'');if(next.length<8)return res.status(422).json({error:'Password must be at least 8 characters.'});if(!await bcrypt.compare(current,req.user.password_hash))return res.status(401).json({error:'Current password is incorrect.'});await pool.query('UPDATE users SET password_hash=?,updated_date=? WHERE id=?',[await bcrypt.hash(next,12),now(),req.user.id]);return res.json({success:true});}
+ if(action==='forgot-password'||action==='resend-reset-otp'){const email=String(p.email||'').trim().toLowerCase();const u=await findUserByEmail(email);if(u){const otp=randomOtp(),n=now();await pool.query('INSERT INTO password_reset_otps (id,user_id,otp_hash,attempts,created_date,expires_at) VALUES (?,?,?,?,?,?)',[id('resetotp'),u.id,sha256(otp),0,n,new Date(Date.now()+900000).toISOString().slice(0,19).replace('T',' ')]);await sendMail(u.email,'Kasa Ilaya Resort password reset code',`<p>Your password reset code is <strong>${otp}</strong>. It expires in 15 minutes.</p>`,'reset');}return res.json({success:true,message:'If the account exists, a reset code has been sent.',delivery_method:'email'});}
+ if(action==='validate-reset-code'){const email=String(p.email||'').trim().toLowerCase(),code=String(p.code||'').replace(/\D/g,'');const u=await findUserByEmail(email);if(!u)return res.status(404).json({error:'This reset code is invalid or expired.'});const [r]=await pool.query('SELECT * FROM password_reset_otps WHERE user_id=? AND used_at IS NULL ORDER BY created_date DESC LIMIT 1',[u.id]);const rec=r[0];if(!rec||rec.expires_at<new Date()||rec.otp_hash!==sha256(code))return res.status(404).json({error:'This reset code is invalid or expired.'});const token=crypto.randomBytes(32).toString('hex');await pool.query('INSERT INTO password_reset_tokens (id,user_id,token_hash,purpose,attempts,created_date,expires_at) VALUES (?,?,?,?,?,?,?)',[id('resettoken'),u.id,sha256(token),'reset_authorization',0,now(),new Date(Date.now()+900000).toISOString().slice(0,19).replace('T',' ')]);await pool.query('UPDATE password_reset_otps SET used_at=?,verified_at=? WHERE id=?',[now(),now(),rec.id]);return res.json({valid:true,email:u.email,full_name:u.full_name,reset_token:token});}
+ if(action==='reset-password'){const token=String(p.token||p.reset_token||''),next=String(p.new_password||'');if(!token)return res.status(422).json({error:'Reset authorization is required.'});if(next.length<8)return res.status(422).json({error:'Password must be at least 8 characters.'});const [r]=await pool.query('SELECT * FROM password_reset_tokens WHERE token_hash=? AND used_at IS NULL LIMIT 1',[sha256(token)]);const rec=r[0];if(!rec||rec.expires_at<new Date())return res.status(404).json({error:'This reset authorization is invalid or expired.'});await pool.query('UPDATE users SET password_hash=?,updated_date=? WHERE id=?',[await bcrypt.hash(next,12),now(),rec.user_id]);await pool.query('UPDATE password_reset_tokens SET used_at=? WHERE id=?',[now(),rec.id]);return res.json({success:true});}
+ return res.status(405).json({error:'Unsupported auth action.'});
+}catch(e){next(e);}});
+module.exports=router;

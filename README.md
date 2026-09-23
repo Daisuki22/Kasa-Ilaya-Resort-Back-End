@@ -1,86 +1,24 @@
-# Kasa Ilaya Resort — Node.js Backend
+# Kasa Ilaya Resort — Node.js production backend
 
-Node.js + Express + MySQL2 backend for Render and TiDB Cloud.
-
-## Architecture
-
-Vercel frontend → Render Node.js API → TiDB Cloud
-
-No Docker is required.
-
-## Local setup
-
-1. Copy `.env.example` to `.env`.
-2. Put your TiDB credentials in `.env`.
-3. Install dependencies:
-
-```bash
-npm install
-```
-
-4. Start:
-
-```bash
-npm run dev
-```
-
-5. Test:
-
-```text
-GET http://localhost:10000/api/health
-```
+This replaces the PHP API with Node.js/Express and keeps the old `.php` API paths as compatibility aliases.
 
 ## Render
-
-Create a Render Web Service:
-
-- Runtime: Node
+- Root Directory: `backend` (if this folder is copied into your repo as `backend`)
 - Build Command: `npm ci`
 - Start Command: `npm start`
-- Health Check Path: `/api/health`
 
-Environment variables:
+## Required Render variables
+`NODE_ENV`, `PORT`, `FRONTEND_URL`, `JWT_SECRET`, `JWT_EXPIRES_IN`, `KASA_DB_HOST`, `KASA_DB_PORT`, `KASA_DB_NAME`, `KASA_DB_USER`, `KASA_DB_PASS`.
 
-```text
-NODE_ENV=production
-KASA_DB_HOST=gateway01.ap-southeast-1.prod.aws.tidbcloud.com
-KASA_DB_PORT=4000
-KASA_DB_NAME=kasa_ilaya_resort
-KASA_DB_USER=your_tidb_user
-KASA_DB_PASS=your_tidb_password
-FRONTEND_URL=https://your-vercel-domain.vercel.app
-JWT_SECRET=generate-a-long-random-secret
-JWT_EXPIRES_IN=7d
-```
+Optional SMTP: `KASA_MAIL_ENABLED`, `KASA_SMTP_HOST`, `KASA_SMTP_PORT`, `KASA_SMTP_USER`, `KASA_SMTP_PASS`, `KASA_MAIL_FROM_EMAIL`, `KASA_MAIL_FROM_NAME`, `KASA_ADMIN_NOTIFICATION_EMAIL`.
 
-Do not commit `.env`.
+## Existing frontend compatibility
+These remain available:
+- `/api/auth.php?action=...`
+- `/api/entities.php?entity=...`
+- `/api/inquiries.php?action=...`
+- `/api/integrations.php?action=...`
 
-## Initial endpoints
+Clean Node equivalents are also available at `/api/auth`, `/api/entities`, `/api/inquiries`, `/api/integrations`.
 
-- `GET /`
-- `GET /api/health`
-- `POST /api/auth/register`
-- `POST /api/auth/login`
-- `GET /api/packages`
-- `GET /api/packages/:id`
-- `GET /api/reviews`
-- `GET /api/resortRules`
-- `GET /api/schedules`
-- `GET /api/paymentQrCodes`
-- `GET /api/siteSettings`
-- `GET /api/bookings`
-- `GET /api/inquiries`
-- `GET /api/foundItems`
-- `GET /api/lostItemReports`
-
-Authenticated write endpoints use:
-
-```text
-Authorization: Bearer <JWT>
-```
-
-## Important migration note
-
-This is a clean Node.js replacement backend based on the current Kasa Ilaya TiDB schema. It is not guaranteed to be a drop-in replacement for every old PHP endpoint or frontend API path.
-
-Before deleting the old PHP backend, compare the frontend's API calls with these routes and migrate any additional business logic from the PHP implementation.
+Do not commit `.env`, passwords, JWT secrets, or SMTP credentials.

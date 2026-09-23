@@ -1,51 +1,11 @@
-const express = require("express");
-const cors = require("cors");
-const helmet = require("helmet");
-const morgan = require("morgan");
-
-const config = require("./config/env");
-const healthRouter = require("./routes/health");
-const authRouter = require("./routes/auth");
-const resourcesRouter = require("./routes/resources");
-const { notFound, errorHandler } = require("./middleware/error");
-
-const app = express();
-
-app.disable("x-powered-by");
-
-app.use(helmet());
-app.use(cors({
-  origin: config.frontendUrl,
-  credentials: true
-}));
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
-app.use(morgan(config.nodeEnv === "production" ? "combined" : "dev"));
-
-app.get("/", (req, res) => {
-  res.json({
-    success: true,
-    service: "Kasa Ilaya Resort API",
-    version: "1.0.0"
-  });
-});
-
-app.use("/api/health", healthRouter);
-app.use("/api/auth", authRouter);
-app.use("/api", resourcesRouter);
-
-app.use(notFound);
-app.use(errorHandler);
-
-const server = app.listen(config.port, "0.0.0.0", () => {
-  console.log(`Kasa Ilaya Resort API listening on port ${config.port}`);
-  console.log(`Environment: ${config.nodeEnv}`);
-});
-
-async function shutdown(signal) {
-  console.log(`${signal} received. Shutting down...`);
-  server.close(() => process.exit(0));
-}
-
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+const express=require('express');const cors=require('cors');const helmet=require('helmet');const morgan=require('morgan');const cookieParser=require('cookie-parser');
+const config=require('./config/env');require('./config/database');const {auth}=require('./middleware/auth');const {notFound,errorHandler}=require('./middleware/error');
+const health=require('./routes/health');const authRoutes=require('./routes/auth');const entities=require('./routes/entities');const inquiries=require('./routes/inquiries');const integrations=require('./routes/integrations');
+const app=express();app.disable('x-powered-by');app.set('trust proxy',1);app.use(helmet());app.use(cookieParser());app.use(cors({origin:(origin,cb)=>{if(!origin||!config.frontendUrl||origin===config.frontendUrl)return cb(null,true);return cb(new Error('CORS origin not allowed'));},credentials:true}));app.use(express.json({limit:'10mb'}));app.use(express.urlencoded({extended:true,limit:'10mb'}));app.use(morgan(config.nodeEnv==='production'?'combined':'dev'));app.use('/uploads',express.static(require('path').join(process.cwd(),'uploads')));
+app.get('/',(req,res)=>res.json({success:true,service:'Kasa Ilaya Resort API',version:'2.0.0'}));app.use('/api/health',health);
+// New clean Node endpoints
+app.use('/api/auth',auth,authRoutes);app.use('/api/entities',entities);app.use('/api/inquiries',inquiries);app.use('/api/integrations',integrations);
+// Legacy PHP-compatible URLs so the existing Vercel frontend can work without rewriting every fetch immediately.
+app.use('/api/auth.php',auth,authRoutes);app.use('/api/entities.php',entities);app.use('/api/inquiries.php',inquiries);app.use('/api/integrations.php',integrations);
+app.use(notFound);app.use(errorHandler);
+app.listen(config.port,'0.0.0.0',()=>console.log(`Kasa Ilaya Resort Node API listening on port ${config.port}`));

@@ -1,47 +1,11 @@
-const mysql = require("mysql2/promise");
+const mysql = require('mysql2/promise');
+const config = require('./env');
 
 const pool = mysql.createPool({
-  host: process.env.KASA_DB_HOST,
-  port: Number(process.env.KASA_DB_PORT || 4000),
-  user: process.env.KASA_DB_USER,
-  password: process.env.KASA_DB_PASS,
-  database: process.env.KASA_DB_NAME,
-
-  ssl: {
-    minVersion: "TLSv1.2",
-    rejectUnauthorized: true
-  },
-
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-  enableKeepAlive: true
+  host: config.db.host, port: config.db.port, user: config.db.user, password: config.db.password, database: config.db.name,
+  ssl: { minVersion: 'TLSv1.2', rejectUnauthorized: true },
+  waitForConnections: true, connectionLimit: 10, queueLimit: 0, enableKeepAlive: true, connectTimeout: 15000
 });
 
-async function testConnection() {
-  let connection;
-
-  try {
-    connection = await pool.getConnection();
-
-    await connection.query("SELECT 1");
-
-    console.log("✅ TiDB database connected successfully");
-
-    return true;
-  } catch (error) {
-    console.error("❌ TiDB database connection failed:");
-    console.error(error.message);
-
-    return false;
-  } finally {
-    if (connection) {
-      connection.release();
-    }
-  }
-}
-
-module.exports = {
-  pool,
-  testConnection
-};
+async function testConnection(){ const c=await pool.getConnection(); try { await c.query('SELECT 1'); return true; } finally { c.release(); } }
+module.exports={pool,testConnection};
