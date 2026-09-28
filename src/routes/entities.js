@@ -1,4 +1,5 @@
 const express=require('express'); const router=express.Router(); const {pool}=require('../config/database'); const {id,now,publicUser,isAdmin}=require('../utils'); const {auth}=require('../middleware/auth');
+const {randomUUID}=require('node:crypto');
 const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,dateKeyFromDate,getBookingStartDateTime,getTourTime,isScheduleAvailable,isValidDateKey}=require('../services/bookingSchedule');
 const BOOKING_SCHEDULE_LOCK='kasa_ilaya_booking_schedule';
 const MAP={
@@ -21,7 +22,83 @@ async function databaseScheduleIsAvailable(db,bookingDate,tourType,excludeBookin
 function httpError(message,status){return Object.assign(new Error(message),{status});}
 async function releaseNamedLock(connection){try{await connection.query('SELECT RELEASE_LOCK(?)',[BOOKING_SCHEDULE_LOCK]);}catch{}}
 async function sendAvailability(req,res){const today=dateKeyFromDate(new Date());const excludeId=String(req.query.exclude_id||'');let verifiedExcludeId=null;if(excludeId&&req.user){const [owned]=await pool.query('SELECT id FROM bookings WHERE id=? AND LOWER(customer_email)=LOWER(?) LIMIT 1',[excludeId,req.user.email]);verifiedExcludeId=owned[0]?.id||null;}const excludeClause=verifiedExcludeId?' AND id<>?':'';const bookingParams=[...ACTIVE_BOOKING_STATUSES,today];if(verifiedExcludeId)bookingParams.push(verifiedExcludeId);const [bookings]=await pool.query(`SELECT DATE_FORMAT(booking_date,'%Y-%m-%d') AS booking_date,tour_type FROM bookings WHERE status IN (${ACTIVE_BOOKING_STATUSES.map(()=>'?').join(',')}) AND booking_date>=?${excludeClause}`,bookingParams);const [schedules]=await pool.query("SELECT DATE_FORMAT(schedule_date,'%Y-%m-%d') AS schedule_date FROM upcoming_schedules WHERE schedule_date>=?",[today]);return res.json({booking_dates:bookings,manual_schedule_dates:schedules.map(row=>row.schedule_date)});}
-async function rescheduleBooking(req,res){if(!req.user)return res.status(401).json({error:'Not authenticated.'});const bookingId=String(req.query.id||'');if(!bookingId)return res.status(422).json({error:'Missing booking id.'});const body=req.body||{};if(Object.keys(body).some(key=>!['booking_date','note'].includes(key))||!isValidDateKey(body.booking_date))return res.status(422).json({error:'A valid new booking date is required.'});const note=typeof body.note==='string'?body.note.trim().slice(0,500):'';const admin=isAdmin(req.user);let connection;let lockAcquired=false;let transactionStarted=false;try{connection=await pool.getConnection();const [lockRows]=await connection.query('SELECT GET_LOCK(?,10) AS acquired',[BOOKING_SCHEDULE_LOCK]);lockAcquired=Number(lockRows[0]?.acquired)===1;if(!lockAcquired)throw httpError('Schedule is busy. Please try again.',503);await connection.beginTransaction();transactionStarted=true;const [rows]=await connection.query('SELECT * FROM bookings WHERE id=? FOR UPDATE',[bookingId]);const booking=rows[0];if(!booking)throw httpError('Reservation not found.',404);if(!admin&&String(booking.customer_email||'').toLowerCase()!==String(req.user.email||'').toLowerCase())throw httpError('You are not authorized to reschedule this reservation.',403);if(!['pending','confirmed'].includes(booking.status))throw httpError('This reservation can no longer be rescheduled.',409);if(!admin&&((booking.rebooking_status||'none')==='pending'||Number(booking.rebooking_count||0)>=1))throw httpError('This reservation is not eligible for another reschedule.',409);if(body.booking_date===String(booking.booking_date).slice(0,10))throw httpError('Choose a different date from the current reservation.',422);const today=dateKeyFromDate(new Date());if(body.booking_date<=today)throw httpError('Choose a future date for your reservation.',422);const startTime=getBookingStartDateTime(body.booking_date,booking.tour_type);if(!startTime||!getTourTime(booking.tour_type))throw httpError('This reservation has an invalid tour schedule.',422);if(!admin){const originalStart=getBookingStartDateTime(String(booking.booking_date).slice(0,10),booking.tour_type);if(!originalStart)throw httpError('This reservation date cannot be checked.',422);const cutoff=originalStart.getTime()-7*24*60*60*1000;if(Date.now()>cutoff)throw httpError('Reschedule requests must be submitted at least 7 days before the reservation date.',409);}const available=await databaseScheduleIsAvailable(connection,body.booking_date,booking.tour_type,booking.id,true);if(!available)throw httpError('The selected schedule is unavailable. Please choose another date or time.',409);const originalDate=String(booking.booking_date).slice(0,10);const resolutionNote=note||(admin?'Rescheduled by resort administrator.':'Rescheduled by guest.');await connection.query("UPDATE bookings SET booking_date=?,rebooking_status='approved',rebooking_original_date=?,rebooking_requested_date=?,rebooking_requested_at=NOW(),rebooking_resolved_at=NOW(),rebooking_resolution_note=?,rebooking_count=COALESCE(rebooking_count,0)+1,updated_date=NOW() WHERE id=?",[body.booking_date,originalDate,body.booking_date,resolutionNote,booking.id]);const oldTime=getTourTime(booking.tour_type);const newTime=getTourTime(booking.tour_type);const details=`${admin?'Admin':'Customer'} rescheduled ${booking.booking_reference} (booking ${booking.id}) from ${originalDate} ${oldTime.label} to ${body.booking_date} ${newTime.label}. Package: ${booking.package_name}. Guests: ${booking.guest_count}. Payment status preserved: ${booking.payment_status}.`;await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Guest','Reservation Rescheduled','Booking',booking.id,details]);const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);await connection.commit();transactionStarted=false;return res.json({success:true,data:deserialize(MAP.Booking,updatedRows[0])});}catch(error){if(transactionStarted)try{await connection.rollback();}catch{}const status=error.status||500;return res.status(status).json({error:status===500?'Unable to reschedule reservation. Your existing reservation was not changed.':error.message});}finally{if(connection){if(lockAcquired)await releaseNamedLock(connection);connection.release();}}}
+async function rescheduleBooking(req,res){
+ if(!req.user)return res.status(401).json({error:'Not authenticated.'});
+ const bookingId=String(req.query.id||'');
+ if(!bookingId)return res.status(422).json({error:'Missing booking id.'});
+ const body=req.body||{};
+ if(Object.keys(body).some(key=>!['booking_date','note'].includes(key))||!isValidDateKey(body.booking_date))return res.status(422).json({error:'A valid new booking date is required.'});
+ const note=typeof body.note==='string'?body.note.trim().slice(0,500):'';
+ const admin=isAdmin(req.user);
+ let connection;
+ let lockAcquired=false;
+ let transactionStarted=false;
+ let phase='acquire_connection';
+ try{
+  connection=await pool.getConnection();
+  phase='acquire_schedule_lock';
+  const [lockRows]=await connection.query('SELECT GET_LOCK(?,10) AS acquired',[BOOKING_SCHEDULE_LOCK]);
+  lockAcquired=Number(lockRows[0]?.acquired)===1;
+  if(!lockAcquired)throw httpError('Schedule is busy. Please try again.',503);
+  phase='begin_transaction';
+  await connection.beginTransaction();
+  transactionStarted=true;
+  phase='load_booking';
+  const [rows]=await connection.query('SELECT * FROM bookings WHERE id=? FOR UPDATE',[bookingId]);
+  const booking=rows[0];
+  if(!booking)throw httpError('Reservation not found.',404);
+  if(!admin&&String(booking.customer_email||'').toLowerCase()!==String(req.user.email||'').toLowerCase())throw httpError('You are not authorized to reschedule this reservation.',403);
+  if(!['pending','confirmed'].includes(booking.status))throw httpError('This reservation can no longer be rescheduled.',409);
+  if(!admin&&((booking.rebooking_status||'none')==='pending'||Number(booking.rebooking_count||0)>=1))throw httpError('This reservation is not eligible for another reschedule.',409);
+  if(body.booking_date===String(booking.booking_date).slice(0,10))throw httpError('Choose a different date from the current reservation.',422);
+  const today=dateKeyFromDate(new Date());
+  if(body.booking_date<=today)throw httpError('Choose a future date for your reservation.',422);
+  const startTime=getBookingStartDateTime(body.booking_date,booking.tour_type);
+  if(!startTime||!getTourTime(booking.tour_type))throw httpError('This reservation has an invalid tour schedule.',422);
+  if(!admin){
+   const originalStart=getBookingStartDateTime(String(booking.booking_date).slice(0,10),booking.tour_type);
+   if(!originalStart)throw httpError('This reservation date cannot be checked.',422);
+   const cutoff=originalStart.getTime()-7*24*60*60*1000;
+   if(Date.now()>cutoff)throw httpError('Reschedule requests must be submitted at least 7 days before the reservation date.',409);
+  }
+  phase='validate_schedule_availability';
+  const available=await databaseScheduleIsAvailable(connection,body.booking_date,booking.tour_type,booking.id,true);
+  if(!available)throw httpError('The selected schedule is unavailable. Please choose another date or time.',409);
+  const originalDate=String(booking.booking_date).slice(0,10);
+  const resolutionNote=note||(admin?'Rescheduled by resort administrator.':'Rescheduled by guest.');
+  phase='update_booking';
+  await connection.query("UPDATE bookings SET booking_date=?,rebooking_status='approved',rebooking_original_date=?,rebooking_requested_date=?,rebooking_requested_at=NOW(),rebooking_resolved_at=NOW(),rebooking_resolution_note=?,rebooking_count=COALESCE(rebooking_count,0)+1,updated_date=NOW() WHERE id=?",[body.booking_date,originalDate,body.booking_date,resolutionNote,booking.id]);
+  const oldTime=getTourTime(booking.tour_type);
+  const newTime=getTourTime(booking.tour_type);
+  const details=`${admin?'Admin':'Customer'} rescheduled ${booking.booking_reference} (booking ${booking.id}) from ${originalDate} ${oldTime.label} to ${body.booking_date} ${newTime.label}. Package: ${booking.package_name}. Guests: ${booking.guest_count}. Payment status preserved: ${booking.payment_status}.`;
+  phase='write_activity_log';
+  await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Guest','Reservation Rescheduled','Booking',booking.id,details]);
+  phase='reload_booking';
+  const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);
+  if(!updatedRows[0])throw new Error('Updated reservation could not be reloaded.');
+  phase='commit_transaction';
+  await connection.commit();
+  transactionStarted=false;
+  return res.json({success:true,data:deserialize(MAP.Booking,updatedRows[0])});
+ }catch(error){
+  if(transactionStarted)try{await connection.rollback();}catch{}
+  const status=error.status||500;
+  if(status>=500){
+   const requestId=randomUUID();
+   console.error('Reservation reschedule failed',{requestId,phase,code:error.code,errno:error.errno,sqlState:error.sqlState});
+   return res.status(status).json({
+    error:status===500?'Unable to reschedule reservation. Your existing reservation was not changed.':error.message,
+    request_id:requestId,
+   });
+  }
+  return res.status(status).json({error:error.message});
+ }finally{
+  if(connection){
+   if(lockAcquired)await releaseNamedLock(connection);
+   connection.release();
+  }
+ }
+}
 async function bookingAction(req,res,next){try{const entity=String(req.query.entity||'');const action=String(req.query.action||'');if(entity!=='Booking')return next();if(req.method==='GET'&&action==='availability')return sendAvailability(req,res);if(req.method==='PATCH'&&action==='reschedule')return rescheduleBooking(req,res);if(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'booking_date'))return res.status(400).json({error:'Use the reschedule action to change a reservation date.'});return next();}catch(error){return next(error);}}
 async function bookingCreationLock(req,res,next){const entity=String(req.query.entity||'');const bookingCreate=req.method==='POST'&&entity==='Booking';const manualScheduleWrite=entity==='UpcomingSchedule'&&(req.method==='POST'||(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'schedule_date')));if((!bookingCreate&&!manualScheduleWrite)||!req.user)return next();let connection;let acquired=false;let released=false;const release=async()=>{if(released||!connection)return;released=true;if(acquired)await releaseNamedLock(connection);connection.release();};try{connection=await pool.getConnection();const [rows]=await connection.query('SELECT GET_LOCK(?,10) AS acquired',[BOOKING_SCHEDULE_LOCK]);acquired=Number(rows[0]?.acquired)===1;if(!acquired){connection.release();return res.status(503).json({error:'Schedule is busy. Please try again.'});}res.once('finish',release);res.once('close',release);return next();}catch(error){if(connection&&!acquired)connection.release();return next(error);}}
 async function validate(entity,record,exclude){
