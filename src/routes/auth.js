@@ -19,6 +19,7 @@ const { auth, requireAuth } = require('../middleware/auth');
 const { sendMail } = require('../services/mail');
 
 const router = express.Router();
+const MAX_OTP_ATTEMPTS = 5;
 
 const registrationOtp = () =>
   config.sampleRegistrationOtp || randomOtp();
@@ -231,6 +232,32 @@ router.get('/', async (req, res, next) => {
       return res.json({
         enabled: false
       });
+    }
+
+    if (action === 'validate-reset-token') {
+      const token = String(req.query.token || '');
+      if (!token) {
+        return res.status(422).json({ error: 'Reset authorization is required.' });
+      }
+
+      const [rows] = await pool.query(
+        `SELECT u.email
+         FROM password_reset_tokens t
+         INNER JOIN users u ON u.id=t.user_id
+         WHERE t.token_hash=?
+           AND t.purpose='reset_authorization'
+           AND t.used_at IS NULL
+           AND t.expires_at>NOW()
+           AND u.disabled=0
+         LIMIT 1`,
+        [sha256(token)]
+      );
+
+      if (!rows[0]) {
+        return res.status(404).json({ error: 'This reset authorization is invalid or expired.' });
+      }
+
+      return res.json({ valid: true, email: rows[0].email });
     }
 
     /* ---------- CAPTCHA ---------- */
@@ -1041,19 +1068,31 @@ router.post('/', async (req, res, next) => {
         });
       }
 
+      if (Number(rec.attempts || 0) >= MAX_OTP_ATTEMPTS) {
+        return res.status(429).json({
+          error: 'Too many incorrect codes. Request a new verification code.',
+        });
+      }
+
       if (
         rec.otp_hash !== sha256(otp)
       ) {
-        /*
-         * Increment failed attempts
-         */
-
-        await pool.query(
-          `UPDATE registration_otps
-           SET attempts=attempts+1
-           WHERE id=?`,
-          [rec.id]
-        );
+        const lockCode = Number(rec.attempts || 0) + 1 >= MAX_OTP_ATTEMPTS;
+        if (lockCode) {
+          await pool.query(
+            `UPDATE registration_otps
+             SET attempts=attempts+1, used_at=?
+             WHERE id=? AND used_at IS NULL`,
+            [now(), rec.id]
+          );
+        } else {
+          await pool.query(
+            `UPDATE registration_otps
+             SET attempts=attempts+1
+             WHERE id=? AND used_at IS NULL`,
+            [rec.id]
+          );
+        }
 
         return res.status(401).json({
           error:
@@ -1476,13 +1515,34 @@ router.post('/', async (req, res, next) => {
 
       if (
         !rec ||
-        new Date(rec.expires_at) <
-          new Date() ||
-        rec.otp_hash !== sha256(code)
+        new Date(rec.expires_at) < new Date() ||
+        Number(rec.attempts || 0) >= MAX_OTP_ATTEMPTS
       ) {
         return res.status(404).json({
           error:
             'This reset code is invalid or expired.'
+        });
+      }
+
+      if (rec.otp_hash !== sha256(code)) {
+        const lockCode = Number(rec.attempts || 0) + 1 >= MAX_OTP_ATTEMPTS;
+        if (lockCode) {
+          await pool.query(
+            `UPDATE password_reset_otps
+             SET attempts=attempts+1, used_at=?
+             WHERE id=? AND used_at IS NULL`,
+            [now(), rec.id]
+          );
+        } else {
+          await pool.query(
+            `UPDATE password_reset_otps
+             SET attempts=attempts+1
+             WHERE id=? AND used_at IS NULL`,
+            [rec.id]
+          );
+        }
+        return res.status(404).json({
+          error: 'This reset code is invalid or expired.',
         });
       }
 
@@ -1574,6 +1634,7 @@ router.post('/', async (req, res, next) => {
           `SELECT *
            FROM password_reset_tokens
            WHERE token_hash=?
+             AND purpose='reset_authorization'
              AND used_at IS NULL
            LIMIT 1`,
           [sha256(token)]
