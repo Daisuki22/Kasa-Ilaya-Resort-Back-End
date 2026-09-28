@@ -1,6 +1,6 @@
 # Kasa Ilaya Resort — Node.js production backend
 
-This replaces the PHP API with Node.js/Express and keeps the old `.php` API paths as compatibility aliases.
+Node.js/Express API. It keeps the `.php` API paths used by the existing frontend as compatibility aliases.
 
 ## Render
 - Root Directory: `backend` (if this folder is copied into your repo as `backend`)
@@ -8,7 +8,7 @@ This replaces the PHP API with Node.js/Express and keeps the old `.php` API path
 - Start Command: `npm start`
 
 ## Required Render variables
-`NODE_ENV`, `PORT`, `FRONTEND_URL`, `JWT_SECRET`, `JWT_EXPIRES_IN`, `KASA_DB_HOST`, `KASA_DB_PORT`, `KASA_DB_NAME`, `KASA_DB_USER`, `KASA_DB_PASS`.
+`NODE_ENV`, `PORT`, `FRONTEND_URL`, `JWT_SECRET`, `JWT_EXPIRES_IN`, `KASA_DB_HOST`, `KASA_DB_PORT`, `KASA_DB_NAME`, `KASA_DB_USER`, `KASA_DB_PASS`. Local development uses the same database variables in `backend/.env`; Vite proxies `/api` to `http://localhost:10000`.
 
 Optional SMTP: `KASA_MAIL_ENABLED`, `KASA_SMTP_HOST`, `KASA_SMTP_PORT`, `KASA_SMTP_USER`, `KASA_SMTP_PASS`, `KASA_MAIL_FROM_EMAIL`, `KASA_MAIL_FROM_NAME`, `KASA_ADMIN_NOTIFICATION_EMAIL`.
 

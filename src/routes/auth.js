@@ -55,7 +55,7 @@ function issue(res, user) {
   res.cookie?.('kasa_token', token, {
     httpOnly: true,
     secure: config.nodeEnv === 'production',
-    sameSite: 'none',
+    sameSite: config.nodeEnv === 'production' ? 'none' : 'lax',
     maxAge: 7 * 86400000
   });
 
