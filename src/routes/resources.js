@@ -81,7 +81,8 @@ function columnsFromBody(body, forbidden = []) {
   const allowed = new Set([
     "booking_reference", "package_id", "package_name", "tour_type", "booking_date",
     "guest_count", "customer_name", "customer_email", "customer_phone", "special_requests",
-    "total_amount", "reservation_fee_amount", "payment_qr_code_id", "payment_qr_code_label",
+    "total_amount", "reservation_fee_amount", "payment_type", "payment_amount_due", "payment_mode",
+    "payment_qr_code_id", "payment_qr_code_label",
     "receipt_url", "status", "payment_status", "additional_fee_amount", "additional_fee_reason",
     "additional_fee_status", "rebooking_status", "rebooking_original_date",
     "rebooking_requested_date", "rebooking_reason", "rebooking_requested_at",

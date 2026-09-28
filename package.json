@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "health": "node -e \"fetch((process.env.API_URL||'http://localhost:10000')+'/api/health').then(r=>r.text()).then(console.log)\""
+    "health": "node -e \"fetch((process.env.API_URL||'http://localhost:10000')+'/api/health').then(r=>r.text()).then(console.log)\"",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"
