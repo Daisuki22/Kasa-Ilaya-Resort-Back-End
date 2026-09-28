@@ -18,7 +18,14 @@ module.exports = {
   sampleRegistrationOtp: /^\d{6}$/.test(process.env.KASA_SAMPLE_REGISTRATION_OTP || '')
     ? process.env.KASA_SAMPLE_REGISTRATION_OTP
     : ((process.env.NODE_ENV || 'development') === 'production' ? '' : '123456'),
-  db: {host:process.env.KASA_DB_HOST, port:Number(process.env.KASA_DB_PORT||4000), name:process.env.KASA_DB_NAME, user:process.env.KASA_DB_USER, password:process.env.KASA_DB_PASS},
+  db: {
+    host: process.env.KASA_DB_HOST,
+    port: Number(process.env.KASA_DB_PORT || 4000),
+    name: process.env.KASA_DB_NAME,
+    user: process.env.KASA_DB_USER,
+    password: process.env.KASA_DB_PASS,
+    ssl: /^(1|true|yes)$/i.test(process.env.KASA_DB_SSL || ((process.env.NODE_ENV || 'development') === 'production' ? 'true' : 'false'))
+  },
   mail: {enabled:/^(1|true|yes)$/i.test(process.env.KASA_MAIL_ENABLED||'false'), host:process.env.KASA_SMTP_HOST||'smtp-relay.brevo.com', port:Number(process.env.KASA_SMTP_PORT||587), user:process.env.KASA_SMTP_USER||'', pass:process.env.KASA_SMTP_PASS||'', from:process.env.KASA_MAIL_FROM_EMAIL||'', fromName:process.env.KASA_MAIL_FROM_NAME||'Kasa Ilaya Resort', admin:process.env.KASA_ADMIN_NOTIFICATION_EMAIL||''},
   googleClientId
 };
