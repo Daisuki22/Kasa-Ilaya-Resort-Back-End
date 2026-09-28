@@ -56,6 +56,7 @@ function issue(res, user) {
     httpOnly: true,
     secure: config.nodeEnv === 'production',
     sameSite: config.nodeEnv === 'production' ? 'none' : 'lax',
+    path: '/api',
     maxAge: 7 * 86400000
   });
 
@@ -127,11 +128,20 @@ async function verifyGoogleCredential(credential) {
     );
   }
 
-  const response = await fetch(
-    `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(
-      credential
-    )}`
-  );
+  let response;
+  try {
+    response = await fetch(
+      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(
+        credential
+      )}`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+  } catch {
+    throw Object.assign(
+      new Error('Google sign-in is temporarily unavailable.'),
+      { status: 503 }
+    );
+  }
 
   if (!response.ok) {
     throw Object.assign(
@@ -157,6 +167,18 @@ async function verifyGoogleCredential(credential) {
   ) {
     throw Object.assign(
       new Error('Google token issuer is invalid.'),
+      { status: 401 }
+    );
+  }
+
+  const expiresAt = Number(payload.exp);
+  if (
+    !String(payload.sub || '').trim() ||
+    !Number.isFinite(expiresAt) ||
+    expiresAt <= Math.floor(Date.now() / 1000)
+  ) {
+    throw Object.assign(
+      new Error('Google credential is invalid or expired.'),
       { status: 401 }
     );
   }
@@ -456,46 +478,79 @@ router.post('/', async (req, res, next) => {
               email.split('@')[0]
           ).trim();
 
+        let profileImageUrl = null;
+        try {
+          const picture = new URL(String(googleUser.picture || ''));
+          if (
+            picture.protocol === 'https:' &&
+            picture.hostname.endsWith('.googleusercontent.com')
+          ) {
+            profileImageUrl = picture.toString();
+          }
+        } catch {}
+
         const n = now();
 
-        await pool.query(
-          `INSERT INTO users
-          (
-            id,
-            created_date,
-            updated_date,
-            email,
-            full_name,
-            birth_date,
-            phone,
-            role,
-            password_hash,
-            disabled,
-            is_verified,
-            app_id,
-            is_service,
-            app_role
-          )
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [
-            id('user'),
-            n,
-            n,
-            email,
-            fullName,
-            birthDate,
-            p.phone || null,
-            'guest',
-            null,
-            0,
-            1,
-            'local-kasa-ilaya',
-            0,
-            'guest'
-          ]
-        );
+        try {
+          await pool.query(
+            `INSERT INTO users
+            (
+              id,
+              created_date,
+              updated_date,
+              email,
+              full_name,
+              birth_date,
+              phone,
+              profile_image_url,
+              role,
+              password_hash,
+              disabled,
+              is_verified,
+              app_id,
+              is_service,
+              app_role
+            )
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            [
+              id('user'),
+              n,
+              n,
+              email,
+              fullName,
+              birthDate,
+              p.phone || null,
+              profileImageUrl,
+              'guest',
+              null,
+              0,
+              1,
+              'local-kasa-ilaya',
+              0,
+              'guest'
+            ]
+          );
+        } catch (error) {
+          if (error.code === 'ER_DUP_ENTRY' || error.errno === 1062) {
+            user = await findUserByEmail(email);
+          } else {
+            console.error('Google account persistence failed', {
+              code: error.code,
+              errno: error.errno
+            });
+            return res.status(503).json({
+              error: 'Unable to save your Google account right now. Please try again.'
+            });
+          }
+        }
 
-        user = await findUserByEmail(email);
+        user = user || await findUserByEmail(email);
+        if (!user) {
+          console.error('Google account insert completed without a readable user record.');
+          return res.status(503).json({
+            error: 'Unable to finish Google sign-in right now. Please try again.'
+          });
+        }
 
       } else if (!user.is_verified) {
 
@@ -527,7 +582,7 @@ router.post('/', async (req, res, next) => {
     ===================================================== */
 
     if (action === 'logout') {
-      res.clearCookie('kasa_token');
+      res.clearCookie('kasa_token', { path: '/api' });
 
       return res.json({
         success: true,

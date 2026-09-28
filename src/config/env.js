@@ -6,7 +6,6 @@ for (const key of required) if (!process.env[key]) throw new Error(`Missing requ
 const defaultGoogleClientId = '834800627360-tj8514jf4tqk46oodm358bu9thvub21f.apps.googleusercontent.com';
 const googleClientId = process.env.KASA_GOOGLE_CLIENT_ID
   || process.env.GOOGLE_CLIENT_ID
-  || process.env.VITE_GOOGLE_CLIENT_ID
   || defaultGoogleClientId;
 
 module.exports = {
