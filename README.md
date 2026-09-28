@@ -12,6 +12,17 @@ Node.js/Express API. It keeps the `.php` API paths used by the existing frontend
 
 Optional SMTP: `KASA_MAIL_ENABLED`, `KASA_SMTP_HOST`, `KASA_SMTP_PORT`, `KASA_SMTP_USER`, `KASA_SMTP_PASS`, `KASA_MAIL_FROM_EMAIL`, `KASA_MAIL_FROM_NAME`, `KASA_ADMIN_NOTIFICATION_EMAIL`.
 
+## Upload storage on Render
+New uploads are written to `KASA_UPLOADS_DIR` when set, otherwise to
+`backend/uploads`. Static serving checks that directory first, then the
+versioned public recovery assets in `backend/public/uploads`.
+
+Render's filesystem is not persistent without a mounted disk. Attach a persistent
+disk to the service and set `KASA_UPLOADS_DIR` to that disk's mount path plus an
+`uploads` directory (for example `/var/data/kasa-ilaya/uploads`) to preserve new
+uploads across restarts and deploys. The public recovery assets are safe to ship
+with the backend; private booking receipts and profile images are not included.
+
 ## Existing frontend compatibility
 These remain available:
 - `/api/auth.php?action=...`
