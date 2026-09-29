@@ -8,12 +8,13 @@ const {uploadsDir,bundledUploadsDir}=require('../config/uploads');
 const {createNotification,notifySafely,notifyBookingAdmins}=require('../services/notifications');
 const {quoteBooking}=require('../services/bookingPricing');
 const {findExistingBookingSubmission}=require('../services/bookingSubmission');
+const {validateRequiredBookingPayment}=require('../services/bookingPaymentValidation');
 const {expirePastPendingBookings}=require('../services/bookingExpiration');
 const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,calendarDaysUntil,dateKeyFromDate,getBookingEndDateTime,getBookingStartDateTime,getTourTime,isBookingCancellationAllowed,isScheduleAvailable,isValidDateKey}=require('../services/bookingSchedule');
 const BOOKING_SCHEDULE_LOCK='kasa_ilaya_booking_schedule';
 const MAP={
  ActivityLog:{table:'activity_logs',fields:['id','created_date','updated_date','user_email','user_name','action','entity_type','entity_id','details']},
- Booking:{table:'bookings',fields:['id','created_date','updated_date','booking_reference','package_id','package_name','tour_type','booking_date','guest_count','customer_user_id','customer_name','customer_email','customer_phone','special_requests','total_amount','reservation_fee_amount','payment_type','payment_amount_due','payment_mode','payment_qr_code_id','payment_qr_code_label','receipt_url','payment_proof_review','payment_proof_fingerprint','payment_proof_ocr_provider','payment_proof_ocr_amount','payment_proof_ocr_reference','payment_proof_ocr_date','payment_proof_ocr_confidence','terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','status','payment_status','additional_fee_amount','additional_fee_reason','additional_fee_status','additional_fee_paid_at','additional_fee_paid_by','rebooking_status','rebooking_original_date','rebooking_requested_date','rebooking_reason','rebooking_requested_at','rebooking_resolved_at','rebooking_resolution_note','rebooking_count']},
+ Booking:{table:'bookings',fields:['id','created_date','updated_date','booking_reference','package_id','package_name','tour_type','booking_date','guest_count','customer_user_id','customer_name','customer_email','customer_phone','special_requests','total_amount','reservation_fee_amount','payment_type','payment_amount_due','payment_mode','payment_number','payment_reference_number','payment_qr_code_id','payment_qr_code_label','receipt_url','payment_proof_review','payment_proof_fingerprint','payment_proof_ocr_provider','payment_proof_ocr_amount','payment_proof_ocr_reference','payment_proof_ocr_date','payment_proof_ocr_confidence','terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','status','approved_by','approved_at','rejected_by','rejected_at','rejection_reason','payment_status','additional_fee_amount','additional_fee_reason','additional_fee_status','additional_fee_paid_at','additional_fee_paid_by','rebooking_status','rebooking_original_date','rebooking_requested_date','rebooking_reason','rebooking_requested_at','rebooking_resolved_at','rebooking_resolution_note','rebooking_count']},
  FoundItem:{table:'found_items',fields:['id','created_date','updated_date','item_name','description','date_found','location_found','found_by','status','image_url','claimed_guest_name','claimed_contact','claimed_reservation_id','proof_of_ownership','released_by','date_claimed','is_active']},
  LostItemReport:{table:'lost_item_reports',fields:['id','created_date','updated_date','guest_name','reservation_number','item_lost','description','date_lost','contact_number','email','status','matched_item_id']},
  Package:{table:'packages',fields:['id','created_date','updated_date','name','description','tour_type','price','day_tour_price','night_tour_price','twenty_two_hour_price','max_guests','inclusions','gallery_images','image_url','is_active'],json:['inclusions','gallery_images'],bool:['is_active'],numeric:['price','day_tour_price','night_tour_price','twenty_two_hour_price','max_guests']},
@@ -378,12 +379,12 @@ async function acceptBooking(req,res){
   const booking=rows[0];
   if(!booking)throw httpError('Reservation not found.',404);
   if(booking.status!=='pending')throw httpError('Only pending bookings can be accepted.',409);
-  if(booking.payment_status!=='pending_verification'||!String(booking.receipt_url||'').trim()||!uploadedReceiptPath(booking.receipt_url)||!String(booking.payment_mode||booking.payment_qr_code_label||'').trim()||Number(booking.payment_amount_due||0)<=0){
-   throw httpError('A payment method, amount, and payment proof are required before accepting this booking.',422);
+  if(booking.payment_status!=='pending_verification'||!String(booking.receipt_url||'').trim()||!uploadedReceiptPath(booking.receipt_url)||!String(booking.payment_mode||booking.payment_qr_code_label||'').trim()||!String(booking.payment_number||'').trim()||!String(booking.payment_reference_number||'').trim()||!Number.isFinite(Number(booking.payment_amount_due))||Number(booking.payment_amount_due)<=0){
+   throw httpError('A payment method, payment number, amount, reference number, and payment proof are required before accepting this booking.',422);
   }
   const [qrRows]=await connection.query('SELECT id FROM payment_qr_codes WHERE id=? LIMIT 1',[booking.payment_qr_code_id]);
   if(!qrRows[0])throw httpError('The selected payment method is no longer available. Review the booking payment details.',409);
-  await connection.query("UPDATE bookings SET status='confirmed',payment_status='paid',updated_date=NOW() WHERE id=? AND status='pending'",[booking.id]);
+  await connection.query("UPDATE bookings SET status='confirmed',approved_by=?,approved_at=NOW(),payment_status='paid',updated_date=NOW() WHERE id=? AND status='pending'",[String(req.user.id||'').slice(0,64),booking.id]);
   await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Administrator','Booking accepted and payment verified','Booking',booking.id,`Accepted ${booking.booking_reference} and verified the submitted ${booking.payment_mode||booking.payment_qr_code_label} proof for ${Number(booking.payment_amount_due).toFixed(2)}.`]);
   const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);
   await connection.commit();
@@ -397,6 +398,35 @@ async function acceptBooking(req,res){
    console.error('Booking acceptance failed',{requestId,code:error.code,errno:error.errno,sqlState:error.sqlState,...(process.env.NODE_ENV==='production'?{}:{details:String(error.message||'').slice(0,500)})});
    return res.status(status).json({error:'Unable to accept this booking. No booking or payment status was changed.',error_code:process.env.NODE_ENV==='production'?'INTERNAL_SERVER_ERROR':(error.code||'INTERNAL_SERVER_ERROR'),...(process.env.NODE_ENV==='production'?{}:{details:String(error.message||'').slice(0,500)}),request_id:requestId});
   }
+  return res.status(status).json({error:error.message});
+ }finally{if(connection)connection.release();}
+}
+async function rejectBooking(req,res){
+ if(!isAdmin(req.user))return res.status(403).json({error:'Only resort administrators can reject bookings.'});
+ const bookingId=String(req.query.id||'');
+ const reason=typeof req.body?.reason==='string'?req.body.reason.trim():'';
+ if(!bookingId)return res.status(422).json({error:'Missing booking id.'});
+ if(reason.length<5||reason.length>1000)return res.status(422).json({error:'Enter a rejection reason between 5 and 1,000 characters.'});
+ let connection;
+ let transactionStarted=false;
+ try{
+  connection=await pool.getConnection();
+  await connection.beginTransaction();
+  transactionStarted=true;
+  const [rows]=await connection.query('SELECT * FROM bookings WHERE id=? FOR UPDATE',[bookingId]);
+  const booking=rows[0];
+  if(!booking)throw httpError('Reservation not found.',404);
+  if(booking.status!=='pending')throw httpError('Only pending bookings can be rejected.',409);
+  await connection.query("UPDATE bookings SET status='rejected',rejected_by=?,rejected_at=NOW(),rejection_reason=?,updated_date=NOW() WHERE id=? AND status='pending'",[String(req.user.id||'').slice(0,64),reason.slice(0,1000),booking.id]);
+  await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Administrator','Booking rejected','Booking',booking.id,`Rejected ${booking.booking_reference||booking.id}. Reason: ${reason.slice(0,800)}`]);
+  const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);
+  await connection.commit();
+  transactionStarted=false;
+  return res.json({success:true,data:deserialize(MAP.Booking,updatedRows[0])});
+ }catch(error){
+  if(transactionStarted)try{await connection.rollback();}catch{}
+  const status=error.status||500;
+  if(status>=500){const requestId=randomUUID();console.error('Booking rejection failed',{requestId,code:error.code,errno:error.errno,sqlState:error.sqlState});return res.status(status).json({error:'Unable to reject this booking right now.',request_id:requestId});}
   return res.status(status).json({error:error.message});
  }finally{if(connection)connection.release();}
 }
@@ -490,6 +520,7 @@ async function createBooking(req,res,next){
    const proofPath=uploadedReceiptPath(record.receipt_url);
    if(proofPath){
     record.payment_proof_fingerprint=createHash('sha256').update(fs.readFileSync(proofPath)).digest('hex');
+    stage='check_duplicate_payment_proof';
     const [duplicates]=await connection.query('SELECT id FROM bookings WHERE payment_proof_fingerprint=? LIMIT 1',[record.payment_proof_fingerprint]);
     if(duplicates.length)record.payment_proof_review='duplicate_needs_review';
    }
@@ -498,6 +529,9 @@ async function createBooking(req,res,next){
   await validate('Booking',record,null,connection);
   stage='validate_payment_proof';
   await validateBookingSubmission(record,connection,payload.payment_proof_token,req.user.id);
+  stage='check_payment_reference_number';
+  const [referenceMatches]=await connection.query('SELECT id FROM bookings WHERE LOWER(payment_reference_number)=LOWER(?) LIMIT 1',[record.payment_reference_number]);
+  if(referenceMatches.length)throw httpError('This payment reference number has already been submitted. Check the number or contact the resort.',409);
   stage='validate_legal_acceptance';
   await validateBookingLegalAcceptance(record,payload,connection);
   const cols=[];
@@ -543,7 +577,7 @@ async function adminBookingPage(req,res,next){
   const dateTo=String(req.query.date_to||'').trim();
   const packageId=String(req.query.package_id||'').trim().slice(0,64);
   if(search){where.push('(booking_reference LIKE ? OR customer_name LIKE ? OR customer_email LIKE ? OR package_name LIKE ?)');const term=`%${search}%`;values.push(term,term,term,term);}
-  if(status){if(!['pending','confirmed','cancelled','completed','archived'].includes(status))return res.status(422).json({error:'Choose a valid reservation status.'});where.push('status=?');values.push(status);}
+  if(status){if(!['pending','confirmed','cancelled','completed','archived','rejected'].includes(status))return res.status(422).json({error:'Choose a valid reservation status.'});where.push('status=?');values.push(status);}
   if(paymentStatus){if(!['unpaid','pending_verification','paid'].includes(paymentStatus))return res.status(422).json({error:'Choose a valid payment status.'});where.push('payment_status=?');values.push(paymentStatus);}
   if(dateFrom){if(!isValidDateKey(dateFrom))return res.status(422).json({error:'Choose a valid start date.'});where.push('booking_date>=?');values.push(dateFrom);}
   if(dateTo){if(!isValidDateKey(dateTo))return res.status(422).json({error:'Choose a valid end date.'});where.push('booking_date<=?');values.push(dateTo);}
@@ -575,14 +609,16 @@ async function bookingAction(req,res,next){
   if(['PATCH','PUT'].includes(req.method)&&(action==='cancel'||req.body?.status==='cancelled'))return cancelBooking(req,res);
   if(req.method==='GET'&&action==='availability')return sendAvailability(req,res);
   if(req.method==='PATCH'&&action==='accept')return acceptBooking(req,res);
+  if(req.method==='PATCH'&&action==='reject')return rejectBooking(req,res);
   if(req.method==='PATCH'&&action==='mark-additional-fee-paid')return markAdditionalFeePaid(req,res);
   if(req.method==='PATCH'&&action==='request-reschedule')return requestReschedule(req,res);
   if(req.method==='PATCH'&&action==='resolve-reschedule')return rejectRescheduleRequest(req,res);
   if(req.method==='PATCH'&&action==='reschedule')return rescheduleBooking(req,res);
-  if(['PATCH','PUT'].includes(req.method)&&Object.keys(req.body||{}).some((key)=>['terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','additional_fee_paid_at','additional_fee_paid_by'].includes(key)))return res.status(403).json({error:'Booking legal acceptance and damage-payment audit records cannot be edited directly.'});
+  if(['PATCH','PUT'].includes(req.method)&&Object.keys(req.body||{}).some((key)=>['terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','additional_fee_paid_at','additional_fee_paid_by','approved_by','approved_at','rejected_by','rejected_at','rejection_reason'].includes(key)))return res.status(403).json({error:'Booking legal acceptance and audit records cannot be edited directly.'});
   if(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'rebooking_status'))return res.status(400).json({error:'Use the reschedule request and decision actions to change request status.'});
   if(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'booking_date'))return res.status(400).json({error:'Use a booking reschedule action to change reservation dates.'});
   if(['PATCH','PUT'].includes(req.method)&&req.body?.status==='confirmed')return res.status(400).json({error:'Use the booking acceptance action to confirm a reservation and verify its submitted payment.'});
+  if(['PATCH','PUT'].includes(req.method)&&req.body?.status==='rejected')return res.status(400).json({error:'Use the booking rejection action and provide a reason.'});
   if(['PATCH','PUT'].includes(req.method)&&req.body?.status==='completed'){
    await expirePastPendingBookings();
    const bookingId=String(req.query.id||'');
@@ -644,11 +680,13 @@ async function applyBookingPricing(record,db=pool){
 }
 async function validateBookingSubmission(record,db=pool,proofToken=null,userId=null){
  if(!String(record.customer_name||'').trim()||!String(record.customer_email||'').trim()||!String(record.customer_phone||'').trim())throw httpError('Your name, email, and phone number are required to submit a booking.',422);
+ record.customer_name=String(record.customer_name).trim();
+ Object.assign(record,validateRequiredBookingPayment(record));
  if(!String(record.payment_mode||'').trim()||!record.payment_qr_code_id)throw httpError('Choose a payment method before submitting your booking.',422);
- const [methods]=await db.query('SELECT id,label FROM payment_qr_codes WHERE id=? AND is_active=1 LIMIT 1',[record.payment_qr_code_id]);
+  const [methods]=await db.query('SELECT id,label FROM payment_qr_codes WHERE id=? AND is_active=1 LIMIT 1',[record.payment_qr_code_id]);
  if(!methods[0])throw httpError('The selected payment method is unavailable. Refresh the page and choose another method.',422);
- record.payment_qr_code_label=methods[0].label;
- record.payment_mode=methods[0].label;
+  record.payment_qr_code_label=methods[0].label;
+  record.payment_mode=methods[0].label;
  if(!String(record.receipt_url||'').trim()||!uploadedReceiptPath(record.receipt_url))throw httpError('Upload a valid payment proof image before submitting your booking.',422);
  const claims=getPaymentProofUploadClaims(proofToken,{userId,fileUrl:record.receipt_url,secret:process.env.JWT_SECRET});
  if(!claims)throw httpError('Upload a new payment proof using your signed-in account before submitting this booking.',403);

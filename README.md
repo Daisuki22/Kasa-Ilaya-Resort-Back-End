@@ -8,12 +8,14 @@ Node.js/Express API. It keeps the `.php` API paths used by the existing frontend
 - Start Command: `npm start`
 
 ## Booking schema on TiDB
-Before deploying the booking handler to an existing TiDB database, apply
-`database/migrations/2026-09-29-legal-document-consent.sql`. It creates the
-published legal-document records and adds the customer/legal-acceptance columns
-used by `POST /api/entities.php?entity=Booking`. The full
-`database/kasa_ilaya_resort_updated.sql` schema also includes these fields for
-new database imports.
+Before deploying booking/payment changes to an existing TiDB database, apply
+`database/migrations/2026-09-30-booking-payment-details.sql` and
+`database/migrations/2026-09-29-legal-document-consent.sql`. The booking/payment
+migration adds missing proof-review/OCR, payment number/reference, and approval
+audit columns used by `POST /api/entities.php?entity=Booking`; it is safe to
+rerun on a partially migrated database. The full
+`database/kasa_ilaya_resort_updated.sql` schema includes these fields for new
+database imports.
 
 ## Required Render variables
 `NODE_ENV`, `PORT`, `FRONTEND_URL`, `JWT_SECRET`, `JWT_EXPIRES_IN`, `KASA_DB_HOST`, `KASA_DB_PORT`, `KASA_DB_NAME`, `KASA_DB_USER`, `KASA_DB_PASS`. Local development uses the same database variables in `backend/.env`; Vite proxies `/api` to `http://localhost:10000`.

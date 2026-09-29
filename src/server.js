@@ -13,6 +13,7 @@ app.use('/api/auth', auth, authRoutes);app.use('/api/entities',entities);app.use
 // Legacy PHP-compatible URLs so the existing Vercel frontend can work without rewriting every fetch immediately.
 app.use('/api/auth.php', auth, authRoutes);app.use('/api/entities.php',entities);app.use('/api/inquiries.php',inquiries);app.use('/api/integrations.php',integrations);
 app.use(notFound);app.use(errorHandler);
+if(config.nodeEnv==='production'&&!process.env.KASA_UPLOADS_DIR)console.warn('KASA_UPLOADS_DIR is not configured; uploaded booking proofs may be lost when the Render instance is replaced. Attach a persistent disk and set KASA_UPLOADS_DIR to its mount path.');
 app.listen(config.port, '0.0.0.0', () => {
   console.log(
     `Kasa Ilaya Resort Node API listening on port ${config.port}`
