@@ -23,6 +23,7 @@ function errorHandler(err,req,res,next){
       code:err.code,
       errno:err.errno,
       sqlState:err.sqlState,
+      ...(err.bookingStage?{bookingStage:err.bookingStage}:{}),
     };
     if(['ER_BAD_FIELD_ERROR','ER_NO_SUCH_TABLE'].includes(err.code)){
       context.databaseMessage=String(err.message||'').slice(0,180);

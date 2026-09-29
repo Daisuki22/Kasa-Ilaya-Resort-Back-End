@@ -342,8 +342,10 @@ async function createBooking(req,res,next){
  if(!req.user)return res.status(401).json({error:'Not authenticated.'});
  let connection;
  let transactionStarted=false;
+ let stage='acquire_connection';
  try{
   connection=await pool.getConnection();
+  stage='begin_transaction';
   await connection.beginTransaction();
   transactionStarted=true;
   const payload=req.body||{};
@@ -368,8 +370,11 @@ async function createBooking(req,res,next){
     if(duplicates.length)record.payment_proof_review='duplicate_needs_review';
    }
   }
+  stage='validate_booking_and_availability';
   await validate('Booking',record,null,connection);
+  stage='validate_payment_proof';
   await validateBookingSubmission(record,connection,payload.payment_proof_token,req.user.id);
+  stage='validate_legal_acceptance';
   await validateBookingLegalAcceptance(record,payload,connection);
   const cols=[];
   const placeholders=[];
@@ -380,12 +385,16 @@ async function createBooking(req,res,next){
    placeholders.push('?');
    values.push(serialize(cfg,field,record[field]));
   }
+  stage='insert_booking';
   await connection.query(`INSERT INTO \`bookings\` (${cols.join(',')}) VALUES (${placeholders.join(',')})`,values);
+  stage='read_created_booking';
   const [rows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[record.id]);
+  stage='commit_transaction';
   await connection.commit();
   transactionStarted=false;
   return res.status(201).json(deserialize(cfg,rows[0]||record));
  }catch(error){
+  error.bookingStage=stage;
   if(transactionStarted)try{await connection.rollback();}catch{}
   return next(error);
  }finally{if(connection)connection.release();}
