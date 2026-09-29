@@ -50,11 +50,18 @@ test('charges only for guests beyond the one included in the package price', () 
   assert.equal(quoteForAdditionalGuests(5).total_amount, 7750);
 });
 
-test('rejects invalid tour, fractional guests, guest limits, missing price, and payment type', () => {
+test('allows additional guests beyond package capacity and rejects invalid tour, fractional guests, missing price, and payment type', () => {
+  const unlimitedAdditionalGuests = quoteBooking({
+    packageRecord: { ...packageRecord, max_guests: 2 },
+    tourType: 'day_tour',
+    guestCount: 25,
+    paymentType: 'full_payment',
+  });
+  assert.equal(unlimitedAdditionalGuests.total_amount, 13600);
+
   const invalidQuotes = [
     { tourType: 'invalid', guestCount: 1, paymentType: 'downpayment' },
     { tourType: 'day_tour', guestCount: 1.5, paymentType: 'downpayment' },
-    { tourType: 'day_tour', guestCount: 9, paymentType: 'downpayment' },
     { tourType: 'day_tour', guestCount: 1, paymentType: 'unknown', packageRecord: { price: 0, max_guests: 5 } },
   ];
 

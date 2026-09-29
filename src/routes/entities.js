@@ -599,7 +599,6 @@ async function validate(entity,record,exclude,db=pool){
   if(date<=dateKeyFromDate(new Date()))throw Object.assign(new Error('Choose a future booking date.'),{status:422});
   const guests=Number(record.guest_count||0);
   if(guests<1)throw Object.assign(new Error('Guest count must be at least 1.'),{status:422});
-  if(record.package_id){const [p]=await db.query('SELECT max_guests FROM packages WHERE id=? LIMIT 1',[record.package_id]);if(p[0]&&guests>Number(p[0].max_guests))throw Object.assign(new Error(`This package allows a maximum of ${p[0].max_guests} guests.`),{status:422});}
   if(!exclude&&!await databaseScheduleIsAvailable(db,date,record.tour_type,null,db!==pool))throw Object.assign(new Error('The selected schedule is unavailable. Please choose another date or time.'),{status:409});
  }
  if(entity==='LegalDocument'){
@@ -622,7 +621,7 @@ function blockPublicBookingEmailFilter(req,res,next){
 }
 async function applyBookingPricing(record,db=pool){
  if(!record.package_id)throw httpError('Choose a package before submitting your reservation.',422);
- const [rows]=await db.query('SELECT name,price,day_tour_price,night_tour_price,twenty_two_hour_price,max_guests FROM packages WHERE id=? AND is_active=1 LIMIT 1',[record.package_id]);
+ const [rows]=await db.query('SELECT name,price,day_tour_price,night_tour_price,twenty_two_hour_price FROM packages WHERE id=? AND is_active=1 LIMIT 1',[record.package_id]);
  if(!rows[0])throw httpError('The selected package is unavailable. Please choose another package.',422);
  record.package_name=rows[0].name;
  Object.assign(record,quoteBooking({packageRecord:rows[0],tourType:record.tour_type,guestCount:record.guest_count,paymentType:record.payment_type||'downpayment'}));

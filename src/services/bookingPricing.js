@@ -12,12 +12,8 @@ function quoteBooking({ packageRecord, tourType, guestCount, paymentType }) {
   if (!priceField) throw statusError("Choose a valid tour type.");
 
   const guests = Number(guestCount);
-  const maxGuests = Number(packageRecord?.max_guests || 1);
   if (!Number.isSafeInteger(guests) || guests < 1) {
     throw statusError("Guest count must be a whole number greater than zero.");
-  }
-  if (guests > maxGuests) {
-    throw statusError(`This package allows a maximum of ${maxGuests} guests.`);
   }
 
   const selectedPrice = packageRecord[priceField] ?? packageRecord.price;
@@ -30,6 +26,9 @@ function quoteBooking({ packageRecord, tourType, guestCount, paymentType }) {
   }
 
   const totalAmount = Number((basePrice + Math.max(guests - 1, 0) * ADDITIONAL_GUEST_RATE).toFixed(2));
+  if (!Number.isFinite(totalAmount)) {
+    throw statusError("The guest total is too large to calculate.");
+  }
   const reservationFee = Number((totalAmount * RESERVATION_FEE_RATE).toFixed(2));
 
   return {

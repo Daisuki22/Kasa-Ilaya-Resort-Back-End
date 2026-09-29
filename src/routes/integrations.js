@@ -152,7 +152,7 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
       if (prompt.includes('package') || prompt.includes('price')) {
         return res.json({
           response: 'Here are the current packages:\n' + packages
-            .map((item) => `- ${item.name}: PHP ${Number(item.price).toLocaleString()} for up to ${item.max_guests} guests`)
+            .map((item) => `- ${item.name}: PHP ${Number(item.price).toLocaleString()} base price for one included guest; additional guests are allowed for an extra fee`)
             .join('\n'),
         });
       }
