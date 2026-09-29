@@ -7,12 +7,27 @@ function safeDevelopmentMessage(error){
     .slice(0, 500);
 }
 
+function safeServerMessage(error){
+  return safeDevelopmentMessage(error)
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[email]')
+    .replace(/Duplicate entry '.{1,160}?' for key/gi, 'Duplicate entry [redacted] for key');
+}
+
+function safeStackTrace(error){
+  return String(error?.stack || '')
+    .split('\n')
+    .slice(1)
+    .filter((line) => /^\s+at\s/.test(line))
+    .slice(0, 12)
+    .join('\n');
+}
+
 function notFound(req,res){res.status(404).json({error:'Endpoint not found.',path:req.path});}
 function errorHandler(err,req,res,next){
   if(res.headersSent)return next(err);
   const status=Number(err.status)||500;
   if(status>=500){
-    const requestId=randomUUID();
+    const requestId=req.requestId||randomUUID();
     const context={
       requestId,
       method:req.method,
@@ -23,6 +38,8 @@ function errorHandler(err,req,res,next){
       code:err.code,
       errno:err.errno,
       sqlState:err.sqlState,
+      message:safeServerMessage(err),
+      stack:safeStackTrace(err),
       ...(err.bookingStage?{bookingStage:err.bookingStage}:{}),
     };
     if(['ER_BAD_FIELD_ERROR','ER_NO_SUCH_TABLE'].includes(err.code)){

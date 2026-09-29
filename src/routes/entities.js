@@ -340,6 +340,26 @@ async function acceptBooking(req,res){
 }
 async function createBooking(req,res,next){
  if(!req.user)return res.status(401).json({error:'Not authenticated.'});
+ const payload=req.body||{};
+ console.info('Booking request received',{
+  requestId:req.requestId,
+  method:req.method,
+  path:req.path,
+  payloadKeys:Object.keys(payload).slice(0,50).map((key)=>String(key).slice(0,64)),
+  packageId:typeof payload.package_id==='string'?payload.package_id.slice(0,64):null,
+  bookingDate:typeof payload.booking_date==='string'?payload.booking_date.slice(0,10):null,
+  tourType:typeof payload.tour_type==='string'?payload.tour_type.slice(0,32):null,
+  guestCount:Number.isFinite(Number(payload.guest_count))?Number(payload.guest_count):null,
+  totalAmount:Number.isFinite(Number(payload.total_amount))?Number(payload.total_amount):null,
+  paymentType:typeof payload.payment_type==='string'?payload.payment_type.slice(0,32):null,
+  paymentQrCodeId:typeof payload.payment_qr_code_id==='string'?payload.payment_qr_code_id.slice(0,64):null,
+  receiptProvided:Boolean(payload.receipt_url),
+  termsVersion:typeof payload.terms_version==='string'?payload.terms_version.slice(0,32):null,
+  termsAccepted:payload.terms_accepted===true,
+  privacyVersion:typeof payload.privacy_version==='string'?payload.privacy_version.slice(0,32):null,
+  privacyAcknowledged:payload.privacy_acknowledged===true,
+  privacyConsent:payload.privacy_consent===true,
+ });
  let connection;
  let transactionStarted=false;
  let stage='acquire_connection';
@@ -348,7 +368,6 @@ async function createBooking(req,res,next){
   stage='begin_transaction';
   await connection.beginTransaction();
   transactionStarted=true;
-  const payload=req.body||{};
   const cfg=MAP.Booking;
   const record={};
   for(const field of cfg.fields)if(Object.prototype.hasOwnProperty.call(payload,field))record[field]=payload[field];

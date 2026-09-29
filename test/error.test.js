@@ -50,6 +50,7 @@ test('production server errors do not expose SQL details to API clients', () => 
   assert.doesNotMatch(JSON.stringify(logs), /INSERT INTO bookings/);
 });
 
+
 test('development server errors return useful SQL diagnostics without raw SQL', () => {
   const originalNodeEnv = process.env.NODE_ENV;
   delete process.env.NODE_ENV;

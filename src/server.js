@@ -1,10 +1,11 @@
 const express=require('express');const cors=require('cors');const helmet=require('helmet');const morgan=require('morgan');const cookieParser=require('cookie-parser');
+const {randomUUID}=require('node:crypto');
 const config=require('./config/env');const {auth}=require('./middleware/auth');const {notFound,errorHandler}=require('./middleware/error');
 const {uploadsDir,bundledUploadsDir}=require('./config/uploads');
 const health=require('./routes/health');const authRoutes=require('./routes/auth');const entities=require('./routes/entities');const inquiries=require('./routes/inquiries');const integrations=require('./routes/integrations');
 const {sendUpcomingBookingReminders}=require('./services/notifications');
 const {expirePastPendingBookings}=require('./services/bookingExpiration');
-const app=express();app.disable('x-powered-by');app.set('trust proxy',1);app.use(helmet({crossOriginResourcePolicy:{policy:'cross-origin'}}));app.use(cookieParser());const configuredOrigins = String(config.frontendUrl || '').split(',').map(v=>v.trim().replace(/\/$/, '')).filter(Boolean);const allowedOrigins = new Set(configuredOrigins.length ? configuredOrigins : config.nodeEnv === 'production' ? [] : ['http://localhost:5173', 'http://127.0.0.1:5173']);
+const app=express();app.disable('x-powered-by');app.set('trust proxy',1);app.use((req,res,next)=>{req.requestId=randomUUID();res.setHeader('X-Request-Id',req.requestId);next();});app.use(helmet({crossOriginResourcePolicy:{policy:'cross-origin'}}));app.use(cookieParser());const configuredOrigins = String(config.frontendUrl || '').split(',').map(v=>v.trim().replace(/\/$/, '')).filter(Boolean);const allowedOrigins = new Set(configuredOrigins.length ? configuredOrigins : config.nodeEnv === 'production' ? [] : ['http://localhost:5173', 'http://127.0.0.1:5173']);
 app.use(cors({origin:(origin,cb)=>{if(!origin||allowedOrigins.has(String(origin).replace(/\/$/, '')))return cb(null,true);return cb(new Error('CORS origin not allowed'));},credentials:true}));app.use(express.json({limit:'10mb'}));app.use(express.urlencoded({extended:true,limit:'10mb'}));app.use(morgan(config.nodeEnv==='production'?'combined':'dev'));app.use(['/uploads','/api/uploads'],express.static(uploadsDir),express.static(bundledUploadsDir));
 app.get('/',(req,res)=>res.json({success:true,service:'Kasa Ilaya Resort API',version:'2.0.0'}));app.use('/api/health',health);
 // New clean Node endpoints
