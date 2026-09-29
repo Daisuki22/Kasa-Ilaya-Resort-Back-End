@@ -1,4 +1,11 @@
 const { randomUUID } = require('node:crypto');
+const isProduction = () => process.env.NODE_ENV === 'production';
+
+function safeDevelopmentMessage(error){
+  return String(error?.message || 'Request failed.')
+    .replace(/(password|passwd|pwd|token|secret|api[_-]?key)(\s*[=:]\s*)([^\s,;]+)/gi, '$1$2[redacted]')
+    .slice(0, 500);
+}
 
 function notFound(req,res){res.status(404).json({error:'Endpoint not found.',path:req.path});}
 function errorHandler(err,req,res,next){
@@ -20,9 +27,12 @@ function errorHandler(err,req,res,next){
     if(['ER_BAD_FIELD_ERROR','ER_NO_SUCH_TABLE'].includes(err.code)){
       context.databaseMessage=String(err.message||'').slice(0,180);
     }
+    if(!isProduction())context.details=safeDevelopmentMessage(err);
     console.error('API request failed',context);
     return res.status(status).json({
       error:'The server could not complete the request. Please try again.',
+      error_code:isProduction()?'INTERNAL_SERVER_ERROR':(err.code||'INTERNAL_SERVER_ERROR'),
+      ...(!isProduction()?{details:safeDevelopmentMessage(err)}:{}),
       request_id:requestId,
     });
   }

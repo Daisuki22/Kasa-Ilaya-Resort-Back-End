@@ -3,6 +3,7 @@ const config=require('./config/env');const {auth}=require('./middleware/auth');c
 const {uploadsDir,bundledUploadsDir}=require('./config/uploads');
 const health=require('./routes/health');const authRoutes=require('./routes/auth');const entities=require('./routes/entities');const inquiries=require('./routes/inquiries');const integrations=require('./routes/integrations');
 const {sendUpcomingBookingReminders}=require('./services/notifications');
+const {expirePastPendingBookings}=require('./services/bookingExpiration');
 const app=express();app.disable('x-powered-by');app.set('trust proxy',1);app.use(helmet({crossOriginResourcePolicy:{policy:'cross-origin'}}));app.use(cookieParser());const configuredOrigins = String(config.frontendUrl || '').split(',').map(v=>v.trim().replace(/\/$/, '')).filter(Boolean);const allowedOrigins = new Set(configuredOrigins.length ? configuredOrigins : config.nodeEnv === 'production' ? [] : ['http://localhost:5173', 'http://127.0.0.1:5173']);
 app.use(cors({origin:(origin,cb)=>{if(!origin||allowedOrigins.has(String(origin).replace(/\/$/, '')))return cb(null,true);return cb(new Error('CORS origin not allowed'));},credentials:true}));app.use(express.json({limit:'10mb'}));app.use(express.urlencoded({extended:true,limit:'10mb'}));app.use(morgan(config.nodeEnv==='production'?'combined':'dev'));app.use(['/uploads','/api/uploads'],express.static(uploadsDir),express.static(bundledUploadsDir));
 app.get('/',(req,res)=>res.json({success:true,service:'Kasa Ilaya Resort API',version:'2.0.0'}));app.use('/api/health',health);
@@ -19,3 +20,6 @@ app.listen(config.port, '0.0.0.0', () => {
 const reminderTimer=setInterval(()=>{void sendUpcomingBookingReminders().catch(error=>console.error('Upcoming booking reminder check failed',{code:error.code}));},15*60*1000);
 reminderTimer.unref();
 void sendUpcomingBookingReminders().catch(error=>console.error('Initial upcoming booking reminder check failed',{code:error.code}));
+const bookingExpirationTimer=setInterval(()=>{void expirePastPendingBookings().catch(error=>console.error('Pending booking expiration failed',{code:error.code,errno:error.errno,sqlState:error.sqlState}));},15*60*1000);
+bookingExpirationTimer.unref();
+void expirePastPendingBookings().catch(error=>console.error('Initial pending booking expiration failed',{code:error.code,errno:error.errno,sqlState:error.sqlState}));
