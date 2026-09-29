@@ -67,8 +67,14 @@ test('development server errors return useful SQL diagnostics without raw SQL', 
 });
 
 test('client validation errors retain their useful message', () => {
-  const { response } = invoke(Object.assign(new Error('Booking date must be a valid date.'), { status: 422 }));
+  const { response, logs } = invoke(Object.assign(new Error('Booking date must be a valid date.'), {
+    status: 422,
+    bookingStage: 'validate_booking_and_availability',
+  }), { requestId: 'booking-request-123' });
 
   assert.equal(response.statusCode, 422);
   assert.equal(response.body.error, 'Booking date must be a valid date.');
+  assert.equal(response.body.request_id, 'booking-request-123');
+  assert.match(JSON.stringify(logs), /booking-request-123/);
+  assert.match(JSON.stringify(logs), /validate_booking_and_availability/);
 });

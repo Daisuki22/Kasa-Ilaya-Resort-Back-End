@@ -22,7 +22,7 @@ function safeStackTrace(error){
     .join('\n');
 }
 
-function notFound(req,res){res.status(404).json({error:'Endpoint not found.',path:req.path});}
+function notFound(req,res){res.status(404).json({error:'Endpoint not found.',path:req.path,request_id:req.requestId});}
 function errorHandler(err,req,res,next){
   if(res.headersSent)return next(err);
   const status=Number(err.status)||500;
@@ -54,7 +54,20 @@ function errorHandler(err,req,res,next){
       request_id:requestId,
     });
   }
-  console.error('API request rejected',{status,path:req.path,message:err.message});
-  return res.status(status).json({error:err.message||'Request failed.'});
+  const requestId=req.requestId||randomUUID();
+  console.error('API request rejected',{
+    requestId,
+    method:req.method,
+    path:req.path,
+    entity:typeof req.query?.entity==='string'?req.query.entity.slice(0,48):undefined,
+    action:typeof req.query?.action==='string'?req.query.action.slice(0,48):undefined,
+    status,
+    name:err.name,
+    code:err.code,
+    message:safeServerMessage(err),
+    stack:safeStackTrace(err),
+    ...(err.bookingStage?{bookingStage:err.bookingStage}:{}),
+  });
+  return res.status(status).json({error:err.message||'Request failed.',request_id:requestId});
 }
 module.exports={notFound,errorHandler};
