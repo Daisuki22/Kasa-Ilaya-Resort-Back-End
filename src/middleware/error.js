@@ -52,6 +52,7 @@ function errorHandler(err,req,res,next){
       error:'The server could not complete the request. Please try again.',
       error_code:isProduction()?'INTERNAL_SERVER_ERROR':(err.code||'INTERNAL_SERVER_ERROR'),
       ...(!isProduction()?{details:safeDevelopmentMessage(err)}:{}),
+      ...(!isProduction()?{debug:{stage:err.bookingStage||null,database_code:err.code||null,sql_state:err.sqlState||null}}:{}),
       request_id:requestId,
     });
   }

@@ -7,6 +7,7 @@ const path=require('node:path');
 const {uploadsDir,bundledUploadsDir}=require('../config/uploads');
 const {createNotification,notifySafely,notifyBookingAdmins}=require('../services/notifications');
 const {quoteBooking}=require('../services/bookingPricing');
+const {findExistingBookingSubmission}=require('../services/bookingSubmission');
 const {expirePastPendingBookings}=require('../services/bookingExpiration');
 const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,calendarDaysUntil,dateKeyFromDate,getBookingEndDateTime,getBookingStartDateTime,getTourTime,isBookingCancellationAllowed,isScheduleAvailable,isValidDateKey}=require('../services/bookingSchedule');
 const BOOKING_SCHEDULE_LOCK='kasa_ilaya_booking_schedule';
@@ -463,6 +464,17 @@ async function createBooking(req,res,next){
   const cfg=MAP.Booking;
   const record={};
   for(const field of cfg.fields)if(Object.prototype.hasOwnProperty.call(payload,field))record[field]=payload[field];
+  const submittedReference=String(payload.booking_reference||'').trim().slice(0,64);
+  if(submittedReference){
+   stage='check_duplicate_submission';
+   const existingBooking=await findExistingBookingSubmission(connection,submittedReference,req.user);
+   if(existingBooking){
+    await connection.commit();
+    transactionStarted=false;
+    console.info('Duplicate booking submission returned existing reservation',{requestId:req.requestId,bookingId:existingBooking.id,bookingReference:submittedReference});
+    return res.status(200).json(deserialize(cfg,existingBooking));
+   }
+  }
   record.id=record.id||id('booking');
   record.created_date=now();
   record.updated_date=record.created_date;
