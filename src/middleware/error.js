@@ -66,11 +66,12 @@ function errorHandler(err,req,res,next){
     status,
     name:err.name,
     code:err.code,
+    ...(err.appCode?{appCode:err.appCode}:{}),
     message:safeServerMessage(err),
     stack:safeStackTrace(err),
     ...(err.bookingStage?{bookingStage:err.bookingStage}:{}),
     ...(err.bookingContext?{bookingContext:err.bookingContext}:{}),
   });
-  return res.status(status).json({error:err.message||'Request failed.',request_id:requestId});
+  return res.status(status).json({error:err.message||'Request failed.',...(err.appCode?{error_code:err.appCode}:{}),request_id:requestId});
 }
 module.exports={notFound,errorHandler};

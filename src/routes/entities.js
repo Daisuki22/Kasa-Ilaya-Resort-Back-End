@@ -31,7 +31,7 @@ function deserialize(cfg,row){const out={...row};if(cfg.table==='bookings')delet
 function serialize(cfg,f,v){if((cfg.json||[]).includes(f))return v==null?null:JSON.stringify(v);if((cfg.bool||[]).includes(f))return v?1:0;return v;}
 async function getScheduleRows(db,fromDate,toDate,forUpdate=false){const statusSlots=ACTIVE_BOOKING_STATUSES.map(()=>'?').join(',');const lock=forUpdate?' FOR UPDATE':'';const [bookings]=await db.query(`SELECT id,DATE_FORMAT(booking_date,'%Y-%m-%d') AS booking_date,tour_type,status FROM bookings WHERE status IN (${statusSlots}) AND booking_date BETWEEN ? AND ?${lock}`,[...ACTIVE_BOOKING_STATUSES,fromDate,toDate]);const [schedules]=await db.query(`SELECT DATE_FORMAT(schedule_date,'%Y-%m-%d') AS schedule_date FROM upcoming_schedules WHERE schedule_date BETWEEN ? AND ?${lock}`,[fromDate,toDate]);return {bookings,manualDates:schedules.map(row=>row.schedule_date)};}
 async function databaseScheduleIsAvailable(db,bookingDate,tourType,excludeBookingId=null,forUpdate=false){const fromDate=addDateKeyDays(bookingDate,-1);const toDate=addDateKeyDays(bookingDate,tourType==='22_hours'?1:0);const {bookings,manualDates}=await getScheduleRows(db,fromDate,toDate,forUpdate);return isScheduleAvailable({bookingDate,tourType,bookings,manualDates,excludeBookingId});}
-function httpError(message,status){return Object.assign(new Error(message),{status});}
+function httpError(message,status,appCode){return Object.assign(new Error(message),{status,...(appCode?{appCode}:{})});}
 async function releaseNamedLock(connection){try{await connection.query('SELECT RELEASE_LOCK(?)',[BOOKING_SCHEDULE_LOCK]);}catch{}}
 async function sendAvailability(req,res){const today=dateKeyFromDate(new Date());const excludeId=String(req.query.exclude_id||'');let verifiedExcludeId=null;if(excludeId&&req.user){const [owned]=await pool.query('SELECT id FROM bookings WHERE id=? AND LOWER(customer_email)=LOWER(?) LIMIT 1',[excludeId,req.user.email]);verifiedExcludeId=owned[0]?.id||null;}const excludeClause=verifiedExcludeId?' AND id<>?':'';const bookingParams=[...ACTIVE_BOOKING_STATUSES,today];if(verifiedExcludeId)bookingParams.push(verifiedExcludeId);const [bookings]=await pool.query(`SELECT DATE_FORMAT(booking_date,'%Y-%m-%d') AS booking_date,tour_type FROM bookings WHERE status IN (${ACTIVE_BOOKING_STATUSES.map(()=>'?').join(',')}) AND booking_date>=?${excludeClause}`,bookingParams);const [schedules]=await pool.query("SELECT DATE_FORMAT(schedule_date,'%Y-%m-%d') AS schedule_date FROM upcoming_schedules WHERE schedule_date>=?",[today]);return res.json({booking_dates:bookings,manual_schedule_dates:schedules.map(row=>row.schedule_date)});}
 async function rescheduleBooking(req,res){
@@ -79,7 +79,7 @@ async function rescheduleBooking(req,res){
   }
   phase='validate_schedule_availability';
   const available=await databaseScheduleIsAvailable(connection,requestedDate,booking.tour_type,booking.id,true);
-  if(!available)throw httpError('The selected schedule is unavailable. Please choose another date or time.',409);
+  if(!available)throw httpError('The selected schedule is unavailable. Please choose another date or time.',409,'BOOKING_SCHEDULE_UNAVAILABLE');
   const originalDate=dateOnly(booking.booking_date);
   const resolutionNote=note||(admin?'Rescheduled by resort administrator.':'Rescheduled by guest.');
   phase='update_booking';
@@ -155,7 +155,7 @@ async function requestReschedule(req,res){
   if(body.booking_date<=dateKeyFromDate(new Date()))throw httpError('Choose a future date for your reservation.',422);
   if(!getBookingStartDateTime(body.booking_date,booking.tour_type)||!getTourTime(booking.tour_type))throw httpError('This reservation has an invalid tour schedule.',422);
   phase='validate_schedule_availability';
-  if(!await databaseScheduleIsAvailable(connection,body.booking_date,booking.tour_type,booking.id,true))throw httpError('The selected schedule is unavailable. Please choose another date or time.',409);
+  if(!await databaseScheduleIsAvailable(connection,body.booking_date,booking.tour_type,booking.id,true))throw httpError('The selected schedule is unavailable. Please choose another date or time.',409,'BOOKING_SCHEDULE_UNAVAILABLE');
   phase='save_request';
   await connection.query("UPDATE bookings SET rebooking_status='pending',rebooking_original_date=?,rebooking_requested_date=?,rebooking_reason=?,rebooking_requested_at=NOW(),rebooking_resolved_at=NULL,rebooking_resolution_note=NULL,updated_date=NOW() WHERE id=?",[originalDate,body.booking_date,note||null,booking.id]);
   const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);
@@ -531,7 +531,7 @@ async function createBooking(req,res,next){
   await validateBookingSubmission(record,connection,payload.payment_proof_token,req.user.id);
   stage='check_payment_reference_number';
   const [referenceMatches]=await connection.query('SELECT id FROM bookings WHERE LOWER(payment_reference_number)=LOWER(?) LIMIT 1',[record.payment_reference_number]);
-  if(referenceMatches.length)throw httpError('This payment reference number has already been submitted. Check the number or contact the resort.',409);
+  if(referenceMatches.length)throw httpError('This payment reference number has already been submitted. Check the number or contact the resort.',409,'PAYMENT_REFERENCE_ALREADY_USED');
   stage='validate_legal_acceptance';
   await validateBookingLegalAcceptance(record,payload,connection);
   const cols=[];
@@ -651,7 +651,7 @@ async function validate(entity,record,exclude,db=pool){
   if(date<=dateKeyFromDate(new Date()))throw Object.assign(new Error('Choose a future booking date.'),{status:422});
   const guests=Number(record.guest_count||0);
   if(guests<1)throw Object.assign(new Error('Guest count must be at least 1.'),{status:422});
-  if(!exclude&&!await databaseScheduleIsAvailable(db,date,record.tour_type,null,db!==pool))throw Object.assign(new Error('The selected schedule is unavailable. Please choose another date or time.'),{status:409});
+  if(!exclude&&!await databaseScheduleIsAvailable(db,date,record.tour_type,null,db!==pool))throw httpError('The selected schedule is unavailable. Please choose another date or time.',409,'BOOKING_SCHEDULE_UNAVAILABLE');
  }
  if(entity==='LegalDocument'){
   if(!['terms','privacy'].includes(record.document_type))throw httpError('Choose Terms & Conditions or Privacy Notice.',422);
@@ -733,7 +733,7 @@ async function validateBookingLegalAcceptance(record,payload,db){
  const terms=documents.find((document)=>document.document_type==='terms');
  const privacy=documents.find((document)=>document.document_type==='privacy');
  if(!terms||!privacy)throw httpError('Booking policies are not published yet. Please contact the resort.',503);
- if(payload.terms_document_id!==terms.id||payload.terms_version!==terms.version||payload.privacy_document_id!==privacy.id||payload.privacy_version!==privacy.version)throw httpError('The booking policies changed. Review the current Terms & Conditions and Privacy Notice, then submit again.',409);
+ if(payload.terms_document_id!==terms.id||payload.terms_version!==terms.version||payload.privacy_document_id!==privacy.id||payload.privacy_version!==privacy.version)throw httpError('The booking policies changed. Review the current Terms & Conditions and Privacy Notice, then submit again.',409,'BOOKING_POLICIES_CHANGED');
  record.terms_document_id=terms.id;
  record.terms_version=terms.version;
  record.terms_accepted=1;
