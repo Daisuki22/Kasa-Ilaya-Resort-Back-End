@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('node:path');
 const fs = require('node:fs');
+const { randomBytes } = require('node:crypto');
 const { sendMail } = require('../services/mail');
 const { pool } = require('../config/database');
 const { uploadsDir, temporaryUploadsDir } = require('../config/uploads');
@@ -65,7 +66,7 @@ router.post('/', auth, requireUserForSensitiveActions, upload.single('file'), as
 
       const month = new Date().toISOString().slice(0, 7).replace('-', '/');
       const directory = path.join(uploadsDir, month);
-      const name = `upload_${Date.now()}_${Math.random().toString(16).slice(2)}${extension}`;
+      const name = `${purpose === 'profile_image' ? 'profile' : 'upload'}_${randomBytes(16).toString('hex')}${extension}`;
       const target = path.join(directory, name);
       fs.mkdirSync(directory, { recursive: true });
       fs.renameSync(req.file.path, target);

@@ -1256,6 +1256,34 @@ router.post('/', async (req, res, next) => {
       const fields = [];
       const vals = [];
 
+      if (Object.prototype.hasOwnProperty.call(p, 'full_name')) {
+        const fullName = String(p.full_name || '').trim();
+        if (!fullName || fullName.length > 120) {
+          return res.status(422).json({ error: 'Enter a name using 1 to 120 characters.' });
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(p, 'email')) {
+        const email = String(p.email || '').trim().toLowerCase();
+        if (!emailOk(email)) return res.status(422).json({ error: 'Enter a valid email address.' });
+        const [duplicates] = await pool.query(
+          'SELECT id FROM users WHERE LOWER(email)=? AND id<>? LIMIT 1',
+          [email, req.user.id]
+        );
+        if (duplicates[0]) return res.status(409).json({ error: 'That email address is already in use.' });
+      }
+      if (Object.prototype.hasOwnProperty.call(p, 'phone')) {
+        const phone = String(p.phone || '').trim();
+        if (phone && !phoneOk(phone)) {
+          return res.status(422).json({ error: 'Enter a valid Philippine mobile number.' });
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(p, 'profile_image_url')) {
+        const imageUrl = String(p.profile_image_url || '').trim();
+        if (imageUrl.length > 2048 || (imageUrl && !/^(?:https?:\/\/|\/)/i.test(imageUrl))) {
+          return res.status(422).json({ error: 'The profile image path is invalid.' });
+        }
+      }
+
       for (
         const f of [
           'full_name',
@@ -1274,13 +1302,7 @@ router.post('/', async (req, res, next) => {
 
           fields.push(`${f}=?`);
 
-          vals.push(
-            f === 'email'
-              ? String(p[f])
-                  .trim()
-                  .toLowerCase()
-              : p[f] || null
-          );
+          vals.push(f === 'email' ? String(p[f]).trim().toLowerCase() : f === 'full_name' ? String(p[f]).trim() : String(p[f] || '').trim() || null);
         }
       }
 
