@@ -1,6 +1,7 @@
 const crypto=require('crypto');
 const {v4:uuidv4}=require('uuid');
 const {pool}=require('./config/database');
+const {isAdmin}=require('./services/authorization');
 function id(prefix){return `${prefix}-${uuidv4()}`;}
 function now(){return new Date().toISOString().slice(0,19).replace('T',' ');}
 function sha256(v){return crypto.createHash('sha256').update(String(v)).digest('hex');}
@@ -34,5 +35,4 @@ async function findUserByEmail(email) {
 
   return rows[0] || null;
 }
-async function isAdmin(user){return !!user && ['admin','super_admin'].includes(user.role||user.app_role);}
 module.exports={id,now,sha256,randomOtp,publicUser,cleanDate,findUserById,findUserByEmail,isAdmin};

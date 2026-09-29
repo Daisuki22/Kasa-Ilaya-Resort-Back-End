@@ -8,7 +8,7 @@ const {uploadsDir,bundledUploadsDir}=require('../config/uploads');
 const {createNotification,notifySafely,notifyBookingAdmins}=require('../services/notifications');
 const {quoteBooking}=require('../services/bookingPricing');
 const {expirePastPendingBookings}=require('../services/bookingExpiration');
-const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,dateKeyFromDate,getBookingEndDateTime,getBookingStartDateTime,getTourTime,isScheduleAvailable,isValidDateKey}=require('../services/bookingSchedule');
+const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,calendarDaysUntil,dateKeyFromDate,getBookingEndDateTime,getBookingStartDateTime,getTourTime,isCancellationDateEligible,isScheduleAvailable,isValidDateKey}=require('../services/bookingSchedule');
 const BOOKING_SCHEDULE_LOCK='kasa_ilaya_booking_schedule';
 const MAP={
  ActivityLog:{table:'activity_logs',fields:['id','created_date','updated_date','user_email','user_name','action','entity_type','entity_id','details']},
@@ -97,7 +97,7 @@ async function rescheduleBooking(req,res){
  }catch(error){
   if(transactionStarted)try{await connection.rollback();}catch{}
   const status=error.status||500;
-  if(status>=500){
+  if(status>=500&&status!==503){
    const requestId=randomUUID();
    console.error('Reservation reschedule failed',{requestId,phase,code:error.code,errno:error.errno,sqlState:error.sqlState});
    return res.status(status).json({
@@ -174,6 +174,65 @@ async function requestReschedule(req,res){
  }finally{
   if(connection){if(lockAcquired)await releaseNamedLock(connection);connection.release();}
  }
+}
+async function cancelBooking(req,res){
+ if(!req.user)return res.status(401).json({error:'Not authenticated.'});
+ const bookingId=String(req.query.id||'');
+ if(!bookingId)return res.status(422).json({error:'Missing booking id.'});
+ const action=String(req.query.action||'');
+ if(Object.keys(req.body||{}).some(key=>key!=='status')||(req.body?.status!==undefined&&req.body.status!=='cancelled')||(action!=='cancel'&&req.body?.status!=='cancelled'))return res.status(422).json({error:'Invalid cancellation request.'});
+ const admin=isAdmin(req.user);
+ let connection;
+ let lockAcquired=false;
+ let transactionStarted=false;
+ let phase='acquire_connection';
+ try{
+  connection=await pool.getConnection();
+  phase='acquire_schedule_lock';
+  const [lockRows]=await connection.query('SELECT GET_LOCK(?,10) AS acquired',[BOOKING_SCHEDULE_LOCK]);
+  lockAcquired=Number(lockRows[0]?.acquired)===1;
+  if(!lockAcquired)throw httpError('Schedule is busy. Please try again.',503);
+  phase='begin_transaction';
+  await connection.beginTransaction();
+  transactionStarted=true;
+  phase='load_booking';
+  const [rows]=await connection.query("SELECT *,DATE_FORMAT(booking_date,'%Y-%m-%d') AS booking_date_key FROM bookings WHERE id=? FOR UPDATE",[bookingId]);
+  const booking=rows[0];
+  if(!booking)throw httpError('Reservation not found.',404);
+  const ownsById=booking.customer_user_id&&String(booking.customer_user_id)===String(req.user.id);
+  const ownsByEmail=!booking.customer_user_id&&String(booking.customer_email||'').toLowerCase()===String(req.user.email||'').toLowerCase();
+  if(!admin&&!ownsById&&!ownsByEmail)throw httpError('You are not authorized to cancel this reservation.',403);
+  if(booking.status!=='pending'||(booking.payment_status||'unpaid')==='paid')throw httpError('Only unpaid pending reservations can be cancelled online.',409);
+  const bookingDate=String(booking.booking_date_key||'').slice(0,10);
+  if(!isValidDateKey(bookingDate))throw httpError('This booking date cannot be checked for cancellation.',422);
+  const daysUntil=calendarDaysUntil(bookingDate);
+  if(!isCancellationDateEligible(bookingDate)){
+   const error=httpError('Cancellation is not allowed within 7 days of the booking date. You may request a reschedule instead.',400);
+   error.code='CANCELLATION_NOT_ALLOWED';
+   error.days_until_booking=daysUntil;
+   throw error;
+  }
+  phase='cancel_booking';
+  const [result]=await connection.query("UPDATE bookings SET status='cancelled',updated_date=? WHERE id=? AND status='pending'",[now(),bookingId]);
+  if(!result.affectedRows)throw httpError('This reservation has already changed and cannot be cancelled.',409);
+  phase='write_activity_log';
+  await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Guest',admin?'Admin Cancelled Booking':'Customer Cancelled Booking','Booking',bookingId,`Cancelled reservation ${booking.booking_reference||bookingId} scheduled for ${bookingDate}.`]);
+  phase='reload_booking';
+  const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[bookingId]);
+  if(!updatedRows[0])throw new Error('Cancelled reservation could not be reloaded.');
+  await connection.commit();
+  transactionStarted=false;
+  return res.json({success:true,data:deserialize(MAP.Booking,updatedRows[0])});
+ }catch(error){
+  if(transactionStarted)try{await connection.rollback();}catch{}
+  const status=error.status||500;
+  if(status>=500&&status!==503){
+   const requestId=randomUUID();
+   console.error('Reservation cancellation failed',{requestId,phase,code:error.code,errno:error.errno,sqlState:error.sqlState});
+   return res.status(500).json({error:'Unable to cancel this reservation right now.',request_id:requestId});
+  }
+  return res.status(status).json({success:false,error:error.code||'CANCELLATION_FAILED',message:error.message});
+ }finally{if(connection){if(lockAcquired)await releaseNamedLock(connection);connection.release();}}
 }
 async function rejectRescheduleRequest(req,res){
  if(!isAdmin(req.user))return res.status(403).json({error:'Only resort administrators can resolve reschedule requests.'});
@@ -452,6 +511,7 @@ async function bookingAction(req,res,next){
   const action=String(req.query.action||'');
   if(entity!=='Booking')return next();
   if(req.method==='POST')return createBooking(req,res,next);
+  if(['PATCH','PUT'].includes(req.method)&&(action==='cancel'||req.body?.status==='cancelled'))return cancelBooking(req,res);
   if(req.method==='GET'&&action==='availability')return sendAvailability(req,res);
   if(req.method==='PATCH'&&action==='accept')return acceptBooking(req,res);
   if(req.method==='PATCH'&&action==='mark-additional-fee-paid')return markAdditionalFeePaid(req,res);
@@ -585,7 +645,7 @@ async function validateBookingLegalAcceptance(record,payload,db){
  record.privacy_consent=1;
  record.legal_accepted_at=now();
 }
-async function enforceBookingNotice(req,res,next){try{const entity=String(req.query.entity||'');const patch=req.body||{};const cancelling=patch.status==='cancelled';const rebooking=patch.rebooking_status==='requested';if(!['PATCH','PUT'].includes(req.method)||entity!=='Booking'||(!cancelling&&!rebooking)||isAdmin(req.user))return next();const rid=String(req.query.id||'');if(!rid)return next();const [rows]=await pool.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[rid]);const booking=rows[0];if(!booking||String(booking.customer_email).toLowerCase()!==String(req.user?.email||'').toLowerCase())return next();if(cancelling&&(booking.status!=='pending'||(booking.payment_status||'unpaid')==='paid'))return res.status(409).json({error:'Only unpaid pending bookings can be cancelled online.'});if(rebooking&&(!['pending','confirmed'].includes(booking.status)||(booking.rebooking_status||'none')==='pending'||Number(booking.rebooking_count||0)>=1))return res.status(409).json({error:'This booking is not eligible for another rebooking request.'});if(rebooking)return next();const date=String(booking.booking_date||'');const startHour=booking.tour_type==='day_tour'?'08:00:00':['night_tour','22_hours'].includes(booking.tour_type)?'18:00:00':'';if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!startHour)return res.status(422).json({error:'This booking date cannot be checked for cancellation.'});const startTime=new Date(`${date}T${startHour}+08:00`);if(Number.isNaN(startTime.getTime()))return res.status(422).json({error:'This booking date cannot be checked for cancellation.'});const cutoff=startTime.getTime()-7*24*60*60*1000;if(Date.now()>cutoff)return res.status(409).json({error:'Cancellation is not available within 7 days of the reservation date. You may request a reschedule instead.'});return next();}catch(error){return next(error);}}
+async function enforceBookingNotice(req,res,next){try{const entity=String(req.query.entity||'');const body=req.body||{};const rebooking=body.rebooking_status==='requested';if(!['PATCH','PUT'].includes(req.method)||entity!=='Booking'||!rebooking||isAdmin(req.user))return next();if(!req.user)return res.status(401).json({error:'Not authenticated.'});const rid=String(req.query.id||'');if(!rid)return next();const [rows]=await pool.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[rid]);const booking=rows[0];if(!booking||String(booking.customer_email).toLowerCase()!==String(req.user.email||'').toLowerCase())return next();if(!['pending','confirmed'].includes(booking.status)||(booking.rebooking_status||'none')==='pending'||Number(booking.rebooking_count||0)>=1)return res.status(409).json({error:'This booking is not eligible for another rebooking request.'});return next();}catch(error){return next(error);}}
 async function handler(req,res,next){try{const entity=String(req.query.entity||'');const cfg=MAP[entity];if(!cfg)return res.status(404).json({error:`Unsupported entity: ${entity}`});const table=cfg.table;const fields=cfg.fields;const method=req.method;const admin=isAdmin(req.user);if(entity==='LostItemReport'&&!admin)return res.status(403).json({error:'Forbidden.'});if(['ActivityLog','User'].includes(entity)&&!admin&&(method!=='GET'||!req.user))return res.status(403).json({error:'Forbidden.'});if(entity==='User'&&req.user?.role!=='super_admin'&&req.user?.app_role!=='super_admin')return res.status(403).json({error:'Forbidden.'});if(!admin&&['Booking','PaymentQrCode','SiteSetting'].includes(entity)&&method!=='GET')return res.status(403).json({error:'Forbidden.'});if(!admin&&entity==='Review'&&method!=='GET'&&method!=='POST')return res.status(403).json({error:'Forbidden.'});if(!admin&&['Package','ResortRule','UpcomingSchedule','FoundItem'].includes(entity)&&!['GET','POST'].includes(method))return res.status(403).json({error:'Forbidden.'});
 if(method==='GET'){if(entity==='Booking')await expirePastPendingBookings();const where=[],vals=[];if(entity==='Notification'){if(!req.user)return res.status(401).json({error:'Not authenticated.'});where.push('LOWER(user_email)=LOWER(?)');vals.push(req.user.email);}let filter={};try{filter=req.query.filter?JSON.parse(req.query.filter):{};}catch{}for(const [f,v] of Object.entries(filter)){if(!fields.includes(f))continue;if(Array.isArray(v)&&v.length){where.push(`\`${f}\` IN (${v.map(()=>'?').join(',')})`);vals.push(...v.map(x=>serialize(cfg,f,x)));}else{where.push(`\`${f}\`=?`);vals.push(serialize(cfg,f,v));}}if(!admin&&['Package','PaymentQrCode','ResortRule','FoundItem'].includes(entity)){where.push('is_active=1');}if(!admin&&entity==='Review'){where.push('is_approved=1');}if(entity==='ActivityLog'&&!admin){if(!req.user)return res.status(403).json({error:'Forbidden.'});where.push('user_email=?');vals.push(req.user.email);}if(entity==='Booking'&&!admin&&req.user){where.push('LOWER(customer_email)=LOWER(?)');vals.push(req.user.email);}if(entity==='Booking'&&!req.user&&!filter.customer_email){where.push("status IN ('pending','confirmed','completed')");}let sql=`SELECT * FROM \`${table}\``;if(where.length)sql+=' WHERE '+where.join(' AND ');const sort=String(req.query.sort||'');if(sort){const desc=sort.startsWith('-'),sf=desc?sort.slice(1):sort;if(fields.includes(sf))sql+=` ORDER BY \`${sf}\` ${desc?'DESC':'ASC'}`;}if(/^\d+$/.test(String(req.query.limit||'')))sql+=` LIMIT ${Math.min(500,Number(req.query.limit))} OFFSET ${Math.max(0,/^\d+$/.test(String(req.query.offset||''))?Number(req.query.offset):0)}`;const [rows]=await pool.query(sql,vals);return res.json(rows.map(r=>{const item=deserialize(cfg,r);if(entity==='Booking'&&!admin&&(!req.user||String(item.customer_email||'').toLowerCase()!==String(req.user.email||'').toLowerCase()))return {id:item.id,package_id:item.package_id,package_name:item.package_name,tour_type:item.tour_type,booking_date:item.booking_date,guest_count:item.guest_count,status:item.status};return item;}));}
 if(method==='POST'){if(!admin&&!['ActivityLog','Booking','Review'].includes(entity)&&!(entity==='FoundItem'&&req.user))return res.status(403).json({error:'Forbidden.'});if(!req.user&&['ActivityLog','Booking','Review','FoundItem'].includes(entity))return res.status(401).json({error:'Not authenticated.'});const p=req.body||{},n=now(),record={};for(const f of fields)if(Object.prototype.hasOwnProperty.call(p,f))record[f]=p[f];record.id=record.id||id(entity.toLowerCase());record.created_date=record.created_date||n;record.updated_date=n;if(entity==='ActivityLog'&&!admin){record.user_email=req.user.email;record.user_name=req.user.full_name;}if(entity==='Booking'){record.customer_email=req.user.email;record.booking_reference=record.booking_reference||`KI-${cryptoRandom(4)}`;record.status='pending';record.payment_status=record.receipt_url?'pending_verification':'unpaid';record.payment_proof_review=record.receipt_url?'needs_manual_review':null;record.payment_proof_fingerprint=null;if(record.receipt_url){const proofPath=uploadedReceiptPath(record.receipt_url);if(proofPath){record.payment_proof_fingerprint=createHash('sha256').update(fs.readFileSync(proofPath)).digest('hex');const [duplicates]=await pool.query('SELECT id FROM bookings WHERE payment_proof_fingerprint=? LIMIT 1',[record.payment_proof_fingerprint]);if(duplicates.length)record.payment_proof_review='duplicate_needs_review';}}}if(entity==='Review'&&!admin){const [bookings]=await pool.query('SELECT id,booking_reference,package_name,customer_name,customer_email,status FROM bookings WHERE id=? LIMIT 1',[record.booking_id]);const booking=bookings[0];if(!booking||String(booking.customer_email).toLowerCase()!==String(req.user.email).toLowerCase()||booking.status!=='completed')return res.status(403).json({error:'A review can only be submitted for your completed booking.'});Object.assign(record,{booking_reference:booking.booking_reference,package_name:booking.package_name,guest_name:booking.customer_name,guest_email:booking.customer_email});}if(entity==='FoundItem'&&!admin){delete record.is_active;delete record.status;record.found_by=req.user.full_name||req.user.email;record.status='unclaimed';record.is_active=false;}if(entity==='Package'){record.is_active=record.is_active!==false;record.price=Number(record.price||0);record.max_guests=Number(record.max_guests||1);}if(entity==='FoundItem'&&admin)record.status=record.status||'unclaimed';if(entity==='LostItemReport')record.status=record.status||'searching';await validate(entity,record);if(entity==='Booking')await validateBookingSubmission(record);const cols=[],qs=[],vals=[];for(const f of fields)if(Object.prototype.hasOwnProperty.call(record,f)){cols.push(`\`${f}\``);qs.push('?');vals.push(serialize(cfg,f,record[f]));}await pool.query(`INSERT INTO \`${table}\` (${cols.join(',')}) VALUES (${qs.join(',')})`,vals);const [r]=await pool.query(`SELECT * FROM \`${table}\` WHERE id=? LIMIT 1`,[record.id]);return res.status(201).json(deserialize(cfg,r[0]||record));}

@@ -24,6 +24,18 @@ const addDateKeyDays = (value, days) => {
   return date.toISOString().slice(0, 10);
 };
 
+const calendarDaysUntil = (targetDate, todayDate = dateKeyFromDate(new Date())) => {
+  if (!isValidDateKey(targetDate) || !isValidDateKey(todayDate)) return null;
+  const target = new Date(`${targetDate}T00:00:00.000Z`).getTime();
+  const today = new Date(`${todayDate}T00:00:00.000Z`).getTime();
+  return Math.round((target - today) / 86400000);
+};
+
+const isCancellationDateEligible = (bookingDate, todayDate = dateKeyFromDate(new Date())) => {
+  const daysUntil = calendarDaysUntil(bookingDate, todayDate);
+  return daysUntil !== null && daysUntil > 7;
+};
+
 const getTourTime = (tourType) => ({
   day_tour: { start: "08:00", end: "18:00", label: "8:00 AM - 6:00 PM" },
   night_tour: { start: "18:00", end: "06:00", label: "6:00 PM - 6:00 AM (next day)" },
@@ -83,11 +95,13 @@ const getBookingEndDateTime = (bookingDate, tourType) => {
 module.exports = {
   ACTIVE_BOOKING_STATUSES,
   addDateKeyDays,
+  calendarDaysUntil,
   dateKeyFromDate,
   getBookingEndDateTime,
   getBookingStartDateTime,
   getOccupiedDateKeys,
   getTourTime,
   isScheduleAvailable,
+  isCancellationDateEligible,
   isValidDateKey,
 };

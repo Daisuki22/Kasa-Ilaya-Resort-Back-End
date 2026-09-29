@@ -3,9 +3,11 @@ const assert = require("node:assert/strict");
 const {
   getBookingEndDateTime,
   getBookingStartDateTime,
+  calendarDaysUntil,
   getOccupiedDateKeys,
   getTourTime,
   isScheduleAvailable,
+  isCancellationDateEligible,
   isValidDateKey,
 } = require("../src/services/bookingSchedule");
 
@@ -14,6 +16,26 @@ test("accepts real ISO date keys and rejects malformed calendar dates", () => {
   assert.equal(isValidDateKey("2026-02-30"), false);
   assert.equal(isValidDateKey("0000-00-00"), false);
   assert.equal(isValidDateKey("10/05/2026"), false);
+});
+
+test("cancellation eligibility uses inclusive resort calendar dates and requires more than seven days", () => {
+  const today = "2026-10-01";
+  assert.equal(calendarDaysUntil("2026-10-31", today), 30);
+  assert.equal(calendarDaysUntil("2026-10-09", today), 8);
+  assert.equal(calendarDaysUntil("2026-10-08", today), 7);
+  assert.equal(calendarDaysUntil("2026-10-07", today), 6);
+  assert.equal(calendarDaysUntil("2026-10-02", today), 1);
+  assert.equal(calendarDaysUntil(today, today), 0);
+  assert.equal(calendarDaysUntil("2026-09-30", today), -1);
+
+  assert.equal(isCancellationDateEligible("2026-10-31", today), true);
+  assert.equal(isCancellationDateEligible("2026-10-09", today), true);
+  assert.equal(isCancellationDateEligible("2026-10-08", today), false);
+  assert.equal(isCancellationDateEligible("2026-10-07", today), false);
+  assert.equal(isCancellationDateEligible("2026-10-02", today), false);
+  assert.equal(isCancellationDateEligible(today, today), false);
+  assert.equal(isCancellationDateEligible("2026-09-30", today), false);
+  assert.equal(isCancellationDateEligible("not-a-date", today), false);
 });
 
 test("respects fixed tour windows and Philippine local time", () => {
