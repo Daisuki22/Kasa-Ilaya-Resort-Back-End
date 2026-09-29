@@ -8,6 +8,7 @@ const {
   getTourTime,
   isScheduleAvailable,
   isCancellationDateEligible,
+  isBookingCancellationAllowed,
   isValidDateKey,
 } = require("../src/services/bookingSchedule");
 
@@ -36,6 +37,23 @@ test("cancellation eligibility uses inclusive resort calendar dates and requires
   assert.equal(isCancellationDateEligible(today, today), false);
   assert.equal(isCancellationDateEligible("2026-09-30", today), false);
   assert.equal(isCancellationDateEligible("not-a-date", today), false);
+});
+
+test("cancellation requires an active booking more than seven resort calendar days away regardless of payment", () => {
+  const today = "2026-10-01";
+  for (const payment_status of ["paid", "unpaid"]) {
+    assert.equal(isBookingCancellationAllowed({ status: "pending", payment_status }, "2026-10-31", today), true);
+    assert.equal(isBookingCancellationAllowed({ status: "confirmed", payment_status }, "2026-10-09", today), true);
+    assert.equal(isBookingCancellationAllowed({ status: "confirmed", payment_status }, "2026-10-08", today), false);
+    assert.equal(isBookingCancellationAllowed({ status: "pending", payment_status }, "2026-10-07", today), false);
+  }
+
+  assert.equal(isBookingCancellationAllowed({ status: "pending" }, "2026-10-02", today), false);
+  assert.equal(isBookingCancellationAllowed({ status: "pending" }, today, today), false);
+  assert.equal(isBookingCancellationAllowed({ status: "confirmed" }, "2026-09-30", today), false);
+  assert.equal(isBookingCancellationAllowed({ status: "completed" }, "2026-10-31", today), false);
+  assert.equal(isBookingCancellationAllowed({ status: "cancelled" }, "2026-10-31", today), false);
+  assert.equal(isBookingCancellationAllowed({ status: "archived" }, "2026-10-31", today), false);
 });
 
 test("respects fixed tour windows and Philippine local time", () => {

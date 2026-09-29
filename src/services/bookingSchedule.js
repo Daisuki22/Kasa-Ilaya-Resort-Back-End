@@ -36,6 +36,9 @@ const isCancellationDateEligible = (bookingDate, todayDate = dateKeyFromDate(new
   return daysUntil !== null && daysUntil > 7;
 };
 
+const isBookingCancellationAllowed = (booking, bookingDate = booking?.booking_date, todayDate = dateKeyFromDate(new Date())) =>
+  Boolean(booking && ["pending", "confirmed"].includes(booking.status) && isCancellationDateEligible(bookingDate, todayDate));
+
 const getTourTime = (tourType) => ({
   day_tour: { start: "08:00", end: "18:00", label: "8:00 AM - 6:00 PM" },
   night_tour: { start: "18:00", end: "06:00", label: "6:00 PM - 6:00 AM (next day)" },
@@ -103,5 +106,6 @@ module.exports = {
   getTourTime,
   isScheduleAvailable,
   isCancellationDateEligible,
+  isBookingCancellationAllowed,
   isValidDateKey,
 };

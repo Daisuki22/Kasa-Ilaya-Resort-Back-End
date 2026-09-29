@@ -8,7 +8,7 @@ const {uploadsDir,bundledUploadsDir}=require('../config/uploads');
 const {createNotification,notifySafely,notifyBookingAdmins}=require('../services/notifications');
 const {quoteBooking}=require('../services/bookingPricing');
 const {expirePastPendingBookings}=require('../services/bookingExpiration');
-const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,calendarDaysUntil,dateKeyFromDate,getBookingEndDateTime,getBookingStartDateTime,getTourTime,isCancellationDateEligible,isScheduleAvailable,isValidDateKey}=require('../services/bookingSchedule');
+const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,calendarDaysUntil,dateKeyFromDate,getBookingEndDateTime,getBookingStartDateTime,getTourTime,isBookingCancellationAllowed,isScheduleAvailable,isValidDateKey}=require('../services/bookingSchedule');
 const BOOKING_SCHEDULE_LOCK='kasa_ilaya_booking_schedule';
 const MAP={
  ActivityLog:{table:'activity_logs',fields:['id','created_date','updated_date','user_email','user_name','action','entity_type','entity_id','details']},
@@ -200,23 +200,27 @@ async function cancelBooking(req,res){
   const booking=rows[0];
   if(!booking)throw httpError('Reservation not found.',404);
   const ownsById=booking.customer_user_id&&String(booking.customer_user_id)===String(req.user.id);
-  const ownsByEmail=!booking.customer_user_id&&String(booking.customer_email||'').toLowerCase()===String(req.user.email||'').toLowerCase();
-  if(!admin&&!ownsById&&!ownsByEmail)throw httpError('You are not authorized to cancel this reservation.',403);
-  if(booking.status!=='pending'||(booking.payment_status||'unpaid')==='paid')throw httpError('Only unpaid pending reservations can be cancelled online.',409);
+  const ownsByEmail=String(booking.customer_email||'').toLowerCase()===String(req.user.email||'').toLowerCase();
+  if(admin||(!ownsById&&!ownsByEmail))throw httpError('Only the customer who owns this reservation can cancel it.',403);
+  if(!['pending','confirmed'].includes(booking.status))throw httpError('Only active pending or confirmed reservations can be cancelled.',409);
   const bookingDate=String(booking.booking_date_key||'').slice(0,10);
   if(!isValidDateKey(bookingDate))throw httpError('This booking date cannot be checked for cancellation.',422);
   const daysUntil=calendarDaysUntil(bookingDate);
-  if(!isCancellationDateEligible(bookingDate)){
-   const error=httpError('Cancellation is not allowed within 7 days of the booking date. You may request a reschedule instead.',400);
+  if(!isBookingCancellationAllowed(booking,bookingDate)){
+   const message=daysUntil<=0
+    ?'Reservations on today or past dates cannot be cancelled online.'
+    :'Online cancellation is no longer available within 7 days of your reservation date. You may request a reschedule.';
+   const error=httpError(message,400);
    error.code='CANCELLATION_NOT_ALLOWED';
    error.days_until_booking=daysUntil;
    throw error;
   }
   phase='cancel_booking';
-  const [result]=await connection.query("UPDATE bookings SET status='cancelled',updated_date=? WHERE id=? AND status='pending'",[now(),bookingId]);
+  const [result]=await connection.query("UPDATE bookings SET status='cancelled',updated_date=? WHERE id=? AND status IN ('pending','confirmed')",[now(),bookingId]);
   if(!result.affectedRows)throw httpError('This reservation has already changed and cannot be cancelled.',409);
   phase='write_activity_log';
-  await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Guest',admin?'Admin Cancelled Booking':'Customer Cancelled Booking','Booking',bookingId,`Cancelled reservation ${booking.booking_reference||bookingId} scheduled for ${bookingDate}.`]);
+  const paymentNote=booking.payment_status==='paid'?' Payment status remains paid; no refund was issued and the payment record and proof were retained.':` Payment status remains ${booking.payment_status||'unpaid'}.`;
+  await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Guest',admin?'Admin Cancelled Booking':'Customer Cancelled Booking','Booking',bookingId,`Cancelled reservation ${booking.booking_reference||bookingId} scheduled for ${bookingDate}.${paymentNote}`]);
   phase='reload_booking';
   const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[bookingId]);
   if(!updatedRows[0])throw new Error('Cancelled reservation could not be reloaded.');
