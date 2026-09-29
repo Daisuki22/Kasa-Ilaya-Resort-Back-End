@@ -8,9 +8,21 @@ const { pool } = require('../config/database');
 const { uploadsDir, temporaryUploadsDir } = require('../config/uploads');
 const { auth } = require('../middleware/auth');
 const { isAdmin } = require('../utils');
+const config = require('../config/env');
+const { createPaymentProofUploadToken } = require('../services/paymentProofUpload');
 
 const router = express.Router();
 const upload = multer({ dest: temporaryUploadsDir, limits: { fileSize: 8 * 1024 * 1024 } });
+const parseSingleUpload = (req, res, next) => upload.single('file')(req, res, (error) => {
+  if (!error) return next();
+  if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: 'File is too large. Upload an image no larger than 8 MB.' });
+  }
+  if (error instanceof multer.MulterError) {
+    return res.status(422).json({ error: 'Upload failed. Please select one supported image and try again.' });
+  }
+  return next(error);
+});
 const imageExtensions = {
   'image/jpeg': '.jpg',
   'image/png': '.png',
@@ -41,7 +53,7 @@ const requireUserForSensitiveActions = (req, res, next) => {
   return next();
 };
 
-router.post('/', auth, requireUserForSensitiveActions, upload.single('file'), async (req, res, next) => {
+router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async (req, res, next) => {
   try {
     const action = String(req.query.action || '');
 
@@ -70,10 +82,12 @@ router.post('/', auth, requireUserForSensitiveActions, upload.single('file'), as
       const target = path.join(directory, name);
       fs.mkdirSync(directory, { recursive: true });
       fs.renameSync(req.file.path, target);
+      const fileUrl = `/uploads/${month}/${name}`;
       return res.json({
-        file_url: `/uploads/${month}/${name}`,
+        file_url: fileUrl,
         purpose,
         ...(purpose === 'payment_receipt' ? {
+          proof_upload_token: createPaymentProofUploadToken({ userId: req.user.id, fileUrl, secret: config.jwtSecret }),
           validation: 'manual_review',
           message: 'Image file checks passed. Payment details and authenticity require authorized admin review.',
         } : {}),

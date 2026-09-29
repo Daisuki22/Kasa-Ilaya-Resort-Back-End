@@ -1,5 +1,6 @@
 const express=require('express'); const router=express.Router(); const {pool}=require('../config/database'); const {id,now,publicUser,isAdmin}=require('../utils'); const {auth}=require('../middleware/auth');
 const {randomUUID,createHash}=require('node:crypto');
+const {verifyPaymentProofUploadToken}=require('../services/paymentProofUpload');
 const fs=require('node:fs');
 const path=require('node:path');
 const {uploadsDir,bundledUploadsDir}=require('../config/uploads');
@@ -368,7 +369,7 @@ async function createBooking(req,res,next){
    }
   }
   await validate('Booking',record,null,connection);
-  await validateBookingSubmission(record,connection);
+  await validateBookingSubmission(record,connection,payload.payment_proof_token,req.user.id);
   await validateBookingLegalAcceptance(record,payload,connection);
   const cols=[];
   const placeholders=[];
@@ -433,7 +434,7 @@ async function applyBookingPricing(record,db=pool){
  record.package_name=rows[0].name;
  Object.assign(record,quoteBooking({packageRecord:rows[0],tourType:record.tour_type,guestCount:record.guest_count,paymentType:record.payment_type||'downpayment'}));
 }
-async function validateBookingSubmission(record,db=pool){
+async function validateBookingSubmission(record,db=pool,proofToken=null,userId=null){
  if(!String(record.customer_name||'').trim()||!String(record.customer_email||'').trim()||!String(record.customer_phone||'').trim())throw httpError('Your name, email, and phone number are required to submit a booking.',422);
  if(!String(record.payment_mode||'').trim()||!record.payment_qr_code_id)throw httpError('Choose a payment method before submitting your booking.',422);
  const [methods]=await db.query('SELECT id,label FROM payment_qr_codes WHERE id=? AND is_active=1 LIMIT 1',[record.payment_qr_code_id]);
@@ -441,6 +442,7 @@ async function validateBookingSubmission(record,db=pool){
  record.payment_qr_code_label=methods[0].label;
  record.payment_mode=methods[0].label;
  if(!String(record.receipt_url||'').trim()||!uploadedReceiptPath(record.receipt_url))throw httpError('Upload a valid payment proof image before submitting your booking.',422);
+ if(!verifyPaymentProofUploadToken(proofToken,{userId,fileUrl:record.receipt_url,secret:process.env.JWT_SECRET}))throw httpError('Upload a new payment proof using your signed-in account before submitting this booking.',403);
  record.payment_status='pending_verification';
 }
 async function validateBookingLegalAcceptance(record,payload,db){

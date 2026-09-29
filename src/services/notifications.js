@@ -35,7 +35,7 @@ async function notifyBookingAdmins(booking, event = {}) {
     eventKey: event.eventKey || `booking:${booking.id}:received`,
     title: event.title || 'New booking received',
     description: event.description || `${booking.booking_reference || booking.id} · ${booking.customer_name || 'Guest'} · ${booking.package_name || 'Package'} · ${booking.booking_date}`,
-    link: '/AdminBookings',
+    link: `/AdminCalendar?bookingId=${encodeURIComponent(booking.id)}`,
     entityId: booking.id,
   })));
 }
