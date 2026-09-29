@@ -428,6 +428,7 @@ async function markAdditionalFeePaid(req,res){
 async function createBooking(req,res,next){
  if(!req.user)return res.status(401).json({error:'Not authenticated.',request_id:req.requestId});
  const payload=req.body||{};
+ const bookingLogContext={userId:String(req.user.id||'').slice(0,64),packageId:typeof payload.package_id==='string'?payload.package_id.slice(0,64):null,bookingReference:typeof payload.booking_reference==='string'?payload.booking_reference.slice(0,64):null};
  console.info('Booking request received',{
   requestId:req.requestId,
   method:req.method,
@@ -464,6 +465,7 @@ async function createBooking(req,res,next){
   record.customer_email=req.user.email;
   record.customer_user_id=req.user.id;
   record.booking_reference=record.booking_reference||`KI-${cryptoRandom(4)}`;
+  bookingLogContext.bookingReference=String(record.booking_reference).slice(0,64);
   record.status='pending';
   record.payment_status=record.receipt_url?'pending_verification':'unpaid';
   record.payment_proof_review=record.receipt_url?'needs_manual_review':null;
@@ -501,9 +503,51 @@ async function createBooking(req,res,next){
   return res.status(201).json(deserialize(cfg,rows[0]||record));
  }catch(error){
   error.bookingStage=stage;
+  error.bookingContext=bookingLogContext;
   if(transactionStarted)try{await connection.rollback();}catch{}
   return next(error);
  }finally{if(connection)connection.release();}
+}
+async function adminBookingPage(req,res,next){
+ if(!req.user)return res.status(401).json({error:'Not authenticated.'});
+ if(!isAdmin(req.user))return res.status(403).json({error:'Forbidden.'});
+ try{
+  await expirePastPendingBookings();
+  const pageText=String(req.query.page||'1');
+  const limitText=String(req.query.limit||'10');
+  const requestedPage=Number(pageText);
+  const pageSize=Number(limitText);
+  if(!/^\d+$/.test(pageText)||!/^\d+$/.test(limitText)||!Number.isSafeInteger(requestedPage)||requestedPage<1||![10,25,50].includes(pageSize))return res.status(422).json({error:'Choose a valid page and page size.'});
+  const where=[];
+  const values=[];
+  const search=String(req.query.search||'').trim().slice(0,120);
+  const status=String(req.query.status||'').trim();
+  const paymentStatus=String(req.query.payment_status||'').trim();
+  const dateFrom=String(req.query.date_from||'').trim();
+  const dateTo=String(req.query.date_to||'').trim();
+  const packageId=String(req.query.package_id||'').trim().slice(0,64);
+  if(search){where.push('(booking_reference LIKE ? OR customer_name LIKE ? OR customer_email LIKE ? OR package_name LIKE ?)');const term=`%${search}%`;values.push(term,term,term,term);}
+  if(status){if(!['pending','confirmed','cancelled','completed','archived'].includes(status))return res.status(422).json({error:'Choose a valid reservation status.'});where.push('status=?');values.push(status);}
+  if(paymentStatus){if(!['unpaid','pending_verification','paid'].includes(paymentStatus))return res.status(422).json({error:'Choose a valid payment status.'});where.push('payment_status=?');values.push(paymentStatus);}
+  if(dateFrom){if(!isValidDateKey(dateFrom))return res.status(422).json({error:'Choose a valid start date.'});where.push('booking_date>=?');values.push(dateFrom);}
+  if(dateTo){if(!isValidDateKey(dateTo))return res.status(422).json({error:'Choose a valid end date.'});where.push('booking_date<=?');values.push(dateTo);}
+  if(dateFrom&&dateTo&&dateFrom>dateTo)return res.status(422).json({error:'Start date must be on or before end date.'});
+  if(packageId){where.push('package_id=?');values.push(packageId);}
+  const whereSql=where.length?` WHERE ${where.join(' AND ')}`:'';
+  const [countRows]=await pool.query(`SELECT COUNT(*) AS total FROM bookings${whereSql}`,values);
+  const total=Number(countRows[0]?.total||0);
+  const totalPages=Math.max(1,Math.ceil(total/pageSize));
+  const page=Math.min(requestedPage,totalPages);
+  const sortField=String(req.query.sort||'-created_date');
+  const sortFields={created_date:'created_date',booking_date:'booking_date',customer_name:'customer_name',package_name:'package_name',total_amount:'total_amount',status:'status',payment_status:'payment_status'};
+  const descending=sortField.startsWith('-');
+  const requestedSort=descending?sortField.slice(1):sortField;
+  const orderColumn=sortFields[requestedSort]||'created_date';
+  const direction=descending?'DESC':'ASC';
+  const offset=(page-1)*pageSize;
+  const [rows]=await pool.query(`SELECT * FROM bookings${whereSql} ORDER BY \`${orderColumn}\` ${direction},created_date DESC LIMIT ? OFFSET ?`,[...values,pageSize,offset]);
+  return res.json({success:true,data:rows.map((row)=>deserialize(MAP.Booking,row)),pagination:{page,limit:pageSize,total,totalPages}});
+ }catch(error){return next(error);}
 }
 async function bookingAction(req,res,next){
  try{
@@ -511,6 +555,7 @@ async function bookingAction(req,res,next){
   const action=String(req.query.action||'');
   if(entity!=='Booking')return next();
   if(req.method==='POST')return createBooking(req,res,next);
+  if(req.method==='GET'&&action==='admin-page')return adminBookingPage(req,res,next);
   if(['PATCH','PUT'].includes(req.method)&&(action==='cancel'||req.body?.status==='cancelled'))return cancelBooking(req,res);
   if(req.method==='GET'&&action==='availability')return sendAvailability(req,res);
   if(req.method==='PATCH'&&action==='accept')return acceptBooking(req,res);

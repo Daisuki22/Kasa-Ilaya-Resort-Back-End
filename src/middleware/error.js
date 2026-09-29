@@ -41,6 +41,7 @@ function errorHandler(err,req,res,next){
       message:safeServerMessage(err),
       stack:safeStackTrace(err),
       ...(err.bookingStage?{bookingStage:err.bookingStage}:{}),
+      ...(err.bookingContext?{bookingContext:err.bookingContext}:{}),
     };
     if(['ER_BAD_FIELD_ERROR','ER_NO_SUCH_TABLE'].includes(err.code)){
       context.databaseMessage=String(err.message||'').slice(0,180);
@@ -67,6 +68,7 @@ function errorHandler(err,req,res,next){
     message:safeServerMessage(err),
     stack:safeStackTrace(err),
     ...(err.bookingStage?{bookingStage:err.bookingStage}:{}),
+    ...(err.bookingContext?{bookingContext:err.bookingContext}:{}),
   });
   return res.status(status).json({error:err.message||'Request failed.',request_id:requestId});
 }
