@@ -201,6 +201,8 @@ CREATE TABLE `bookings` (
   `payment_qr_code_id` varchar(64) DEFAULT NULL,
   `payment_qr_code_label` varchar(191) DEFAULT NULL,
   `receipt_url` text DEFAULT NULL,
+  `payment_proof_review` varchar(32) DEFAULT NULL,
+  `payment_proof_fingerprint` char(64) DEFAULT NULL,
   `status` enum('pending','confirmed','cancelled','completed','archived') NOT NULL DEFAULT 'pending',
   `payment_status` enum('unpaid','pending_verification','paid') NOT NULL DEFAULT 'unpaid',
   `additional_fee_amount` decimal(10,2) NOT NULL DEFAULT 0.00,
@@ -213,7 +215,8 @@ CREATE TABLE `bookings` (
   `rebooking_requested_at` datetime DEFAULT NULL,
   `rebooking_resolved_at` datetime DEFAULT NULL,
   `rebooking_resolution_note` text DEFAULT NULL,
-  `rebooking_count` int(11) NOT NULL DEFAULT 0
+  `rebooking_count` int(11) NOT NULL DEFAULT 0,
+  KEY `idx_bookings_payment_proof_fingerprint` (`payment_proof_fingerprint`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
@@ -928,6 +931,22 @@ ALTER TABLE `inquiry_messages`
 ALTER TABLE `lost_item_reports`
   ADD CONSTRAINT `fk_lost_item_reports_found_item` FOREIGN KEY (`matched_item_id`) REFERENCES `found_items` (`id`) ON DELETE SET NULL ON UPDATE CASCADE;
 COMMIT;
+
+CREATE TABLE IF NOT EXISTS `notifications` (
+  `id` varchar(64) NOT NULL,
+  `created_date` datetime NOT NULL,
+  `user_email` varchar(191) NOT NULL,
+  `event_key` varchar(191) NOT NULL,
+  `title` varchar(191) NOT NULL,
+  `description` text NOT NULL,
+  `link` varchar(255) DEFAULT NULL,
+  `entity_type` varchar(64) NOT NULL DEFAULT 'Booking',
+  `entity_id` varchar(64) DEFAULT NULL,
+  `is_read` tinyint(1) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_notifications_user_event` (`user_email`,`event_key`),
+  KEY `idx_notifications_user_unread` (`user_email`,`is_read`,`created_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
 /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;

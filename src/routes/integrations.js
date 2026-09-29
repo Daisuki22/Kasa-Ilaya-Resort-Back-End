@@ -16,6 +16,14 @@ const imageExtensions = {
   'image/webp': '.webp',
 };
 
+const hasValidImageSignature = (filePath, mimeType) => {
+  const file = fs.readFileSync(filePath);
+  if (mimeType === 'image/jpeg') return file.length >= 3 && file[0] === 0xff && file[1] === 0xd8 && file[2] === 0xff;
+  if (mimeType === 'image/png') return file.length >= 24 && file.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) && file.toString('ascii', 12, 16) === 'IHDR' && file.readUInt32BE(16) > 0 && file.readUInt32BE(20) > 0;
+  if (mimeType === 'image/webp') return file.length >= 16 && file.toString('ascii', 0, 4) === 'RIFF' && file.toString('ascii', 8, 12) === 'WEBP';
+  return false;
+};
+
 const removeTemporaryFile = (file) => {
   if (file?.path) {
     try {
@@ -50,9 +58,9 @@ router.post('/', auth, requireUserForSensitiveActions, upload.single('file'), as
       }
 
       const extension = imageExtensions[req.file.mimetype];
-      if (!extension) {
+      if (!extension || !hasValidImageSignature(req.file.path, req.file.mimetype)) {
         removeTemporaryFile(req.file);
-        return res.status(422).json({ error: 'Only JPG, PNG, or WebP images are allowed.' });
+        return res.status(422).json({ error: 'The upload is not a valid JPG, PNG, or WebP image. Please choose a supported image file.' });
       }
 
       const month = new Date().toISOString().slice(0, 7).replace('-', '/');
@@ -61,7 +69,14 @@ router.post('/', auth, requireUserForSensitiveActions, upload.single('file'), as
       const target = path.join(directory, name);
       fs.mkdirSync(directory, { recursive: true });
       fs.renameSync(req.file.path, target);
-      return res.json({ file_url: `/uploads/${month}/${name}`, purpose });
+      return res.json({
+        file_url: `/uploads/${month}/${name}`,
+        purpose,
+        ...(purpose === 'payment_receipt' ? {
+          validation: 'manual_review',
+          message: 'Image file checks passed. Payment details and authenticity require authorized admin review.',
+        } : {}),
+      });
     }
 
     if (action === 'send-email') {

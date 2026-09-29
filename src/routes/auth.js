@@ -1336,6 +1336,12 @@ router.post('/', async (req, res, next) => {
         p.new_password || ''
       );
 
+      if (!req.user.password_hash) {
+        return res.status(409).json({
+          error: 'This account uses Google Sign-In. Password management is handled by Google.'
+        });
+      }
+
       if (next.length < 8) {
         return res.status(422).json({
           error:
