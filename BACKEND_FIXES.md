@@ -22,7 +22,7 @@ Keep these names exactly:
 - `KASA_DB_USER`
 - `KASA_DB_PASS`
 - `JWT_SECRET`
-- `FRONTEND_URL=https://kasa-ilaya-frontend.vercel.app`
+- `FRONTEND_URL=https://kasailayaresort.vercel.app`
 
 Do not create `DB_HOST`, `DB_USER`, `DB_PASSWORD`, or `DB_NAME` for this backend unless another unrelated service needs them.
 

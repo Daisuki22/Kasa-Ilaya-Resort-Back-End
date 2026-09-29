@@ -20,7 +20,7 @@ services:
       - key: KASA_DB_PASS
         sync: false
       - key: FRONTEND_URL
-        sync: false
+        value: https://kasailayaresort.vercel.app
       - key: JWT_SECRET
         sync: false
       - key: JWT_EXPIRES_IN
