@@ -10,13 +10,14 @@ const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,dateKeyFromDate,getBookingStartDat
 const BOOKING_SCHEDULE_LOCK='kasa_ilaya_booking_schedule';
 const MAP={
  ActivityLog:{table:'activity_logs',fields:['id','created_date','updated_date','user_email','user_name','action','entity_type','entity_id','details']},
- Booking:{table:'bookings',fields:['id','created_date','updated_date','booking_reference','package_id','package_name','tour_type','booking_date','guest_count','customer_name','customer_email','customer_phone','special_requests','total_amount','reservation_fee_amount','payment_type','payment_amount_due','payment_mode','payment_qr_code_id','payment_qr_code_label','receipt_url','payment_proof_review','payment_proof_fingerprint','status','payment_status','additional_fee_amount','additional_fee_reason','additional_fee_status','rebooking_status','rebooking_original_date','rebooking_requested_date','rebooking_reason','rebooking_requested_at','rebooking_resolved_at','rebooking_resolution_note','rebooking_count']},
+ Booking:{table:'bookings',fields:['id','created_date','updated_date','booking_reference','package_id','package_name','tour_type','booking_date','guest_count','customer_user_id','customer_name','customer_email','customer_phone','special_requests','total_amount','reservation_fee_amount','payment_type','payment_amount_due','payment_mode','payment_qr_code_id','payment_qr_code_label','receipt_url','payment_proof_review','payment_proof_fingerprint','terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','status','payment_status','additional_fee_amount','additional_fee_reason','additional_fee_status','rebooking_status','rebooking_original_date','rebooking_requested_date','rebooking_reason','rebooking_requested_at','rebooking_resolved_at','rebooking_resolution_note','rebooking_count']},
  FoundItem:{table:'found_items',fields:['id','created_date','updated_date','item_name','description','date_found','location_found','found_by','status','image_url','claimed_guest_name','claimed_contact','claimed_reservation_id','proof_of_ownership','released_by','date_claimed','is_active']},
  LostItemReport:{table:'lost_item_reports',fields:['id','created_date','updated_date','guest_name','reservation_number','item_lost','description','date_lost','contact_number','email','status','matched_item_id']},
  Package:{table:'packages',fields:['id','created_date','updated_date','name','description','tour_type','price','day_tour_price','night_tour_price','twenty_two_hour_price','max_guests','inclusions','gallery_images','image_url','is_active'],json:['inclusions','gallery_images'],bool:['is_active'],numeric:['price','day_tour_price','night_tour_price','twenty_two_hour_price','max_guests']},
  PaymentQrCode:{table:'payment_qr_codes',fields:['id','created_date','updated_date','label','account_name','account_number','instructions','image_url','display_order','is_active'],bool:['is_active'],numeric:['display_order']},
  ResortRule:{table:'resort_rules',fields:['id','created_date','updated_date','title','description','sort_order','is_active'],bool:['is_active'],numeric:['sort_order']},
  SiteSetting:{table:'site_settings',fields:['id','created_date','updated_date','site_name','logo_url','hero_image_url','hero_images_json','packages_banner_url','packages_banner_images_json','hero_badge_text','hero_title_line1','hero_title_line2','hero_description','body_font_style','heading_font_style','amenities_section_label','amenities_section_title','amenities_section_description','resort_gallery_json','terms_title','terms_summary','terms_content','amenities_json','require_strong_password','min_password_length','session_timeout_minutes','max_login_attempts','lockout_minutes','enable_login_notifications'],bool:['require_strong_password','enable_login_notifications'],numeric:['min_password_length','session_timeout_minutes','max_login_attempts','lockout_minutes'],json:['hero_images_json','packages_banner_images_json','resort_gallery_json','amenities_json']},
+ LegalDocument:{table:'legal_documents',fields:['id','created_date','updated_date','document_type','title','content','version','status','created_by','published_at']},
  User:{table:'users',fields:['id','created_date','updated_date','email','full_name','birth_date','phone','profile_image_url','role','disabled','is_verified','app_id','is_service','app_role'],bool:['disabled','is_verified','is_service']},
  UpcomingSchedule:{table:'upcoming_schedules',fields:['id','created_date','updated_date','title','schedule_date','start_time','end_time','location','description','created_by_name','created_by_email']},
  Review:{table:'reviews',fields:['id','created_date','updated_date','booking_id','booking_reference','guest_name','guest_email','package_name','rating','review_text','is_approved'],bool:['is_approved'],numeric:['rating']},
@@ -207,6 +208,98 @@ async function rejectRescheduleRequest(req,res){
   return res.status(status).json({error:error.message});
  }finally{if(connection)connection.release();}
 }
+async function publishLegalDocument(req,res){
+ if(!isAdmin(req.user))return res.status(403).json({error:'Only resort administrators can publish legal documents.'});
+ const documentId=String(req.query.id||'');
+ if(!documentId)return res.status(422).json({error:'Missing legal document id.'});
+ let connection;
+ let lockAcquired=false;
+ let transactionStarted=false;
+ try{
+  connection=await pool.getConnection();
+  const [lockRows]=await connection.query("SELECT GET_LOCK('kasa_ilaya_legal_documents',10) AS acquired");
+  lockAcquired=Number(lockRows[0]?.acquired)===1;
+  if(!lockAcquired)throw httpError('Legal documents are being updated. Please try again.',503);
+  await connection.beginTransaction();
+  transactionStarted=true;
+  const [rows]=await connection.query('SELECT * FROM legal_documents WHERE id=? FOR UPDATE',[documentId]);
+  const document=rows[0];
+  if(!document)throw httpError('Legal document draft not found.',404);
+  if(document.status!=='draft')throw httpError('Only a saved draft can be published.',409);
+  await connection.query("UPDATE legal_documents SET status='archived',updated_date=NOW() WHERE document_type=? AND status='published'",[document.document_type]);
+  await connection.query("UPDATE legal_documents SET status='published',published_at=NOW(),updated_date=NOW() WHERE id=? AND status='draft'",[document.id]);
+  const [publishedRows]=await connection.query('SELECT * FROM legal_documents WHERE id=? LIMIT 1',[document.id]);
+  await connection.commit();
+  transactionStarted=false;
+  return res.json({success:true,data:publishedRows[0]});
+ }catch(error){
+  if(transactionStarted)try{await connection.rollback();}catch{}
+  const status=error.status||500;
+  if(status>=500){
+   const requestId=randomUUID();
+   console.error('Legal document publish failed',{requestId,code:error.code,errno:error.errno,sqlState:error.sqlState});
+   return res.status(status).json({error:'Unable to publish this legal document.',request_id:requestId});
+  }
+  return res.status(status).json({error:error.message});
+ }finally{
+  if(connection){if(lockAcquired)try{await connection.query("SELECT RELEASE_LOCK('kasa_ilaya_legal_documents')");}catch{}connection.release();}
+ }
+}
+async function updateLegalDocumentDraft(req,res,next){
+ if(!isAdmin(req.user))return res.status(403).json({error:'Only resort administrators can edit legal documents.'});
+ const documentId=String(req.query.id||'');
+ if(!documentId)return res.status(422).json({error:'Missing legal document id.'});
+ const patch=req.body||{};
+ if(Object.keys(patch).some((key)=>!['title','content','version'].includes(key)))return res.status(403).json({error:'Only a draft title, content, or version can be edited.'});
+ let connection;
+ let transactionStarted=false;
+ try{
+  connection=await pool.getConnection();
+  await connection.beginTransaction();
+  transactionStarted=true;
+  const [rows]=await connection.query('SELECT * FROM legal_documents WHERE id=? FOR UPDATE',[documentId]);
+  if(!rows[0])throw httpError('Legal document not found.',404);
+  if(rows[0].status!=='draft')throw httpError('Published legal documents are immutable. Save a new draft to make changes.',409);
+  const record={...rows[0],...patch,updated_date:now()};
+  await validate('LegalDocument',record,documentId,connection);
+  const fields=['title','content','version'].filter((field)=>Object.prototype.hasOwnProperty.call(patch,field));
+  if(fields.length){
+   const updates=fields.map((field)=>`\`${field}\`=?`);
+   const values=fields.map((field)=>record[field]);
+   updates.push('updated_date=?');
+   values.push(record.updated_date,documentId);
+   await connection.query(`UPDATE legal_documents SET ${updates.join(',')} WHERE id=? AND status='draft'`,values);
+  }
+  const [updatedRows]=await connection.query('SELECT * FROM legal_documents WHERE id=? LIMIT 1',[documentId]);
+  await connection.commit();
+  transactionStarted=false;
+  return res.json(updatedRows[0]);
+ }catch(error){
+  if(transactionStarted)try{await connection.rollback();}catch{}
+  if((error.status||500)>=500)return next(error);
+  return res.status(error.status).json({error:error.message});
+ }finally{if(connection)connection.release();}
+}
+async function legalDocumentAction(req,res,next){
+ if(String(req.query.entity||'')!=='LegalDocument')return next();
+ const admin=isAdmin(req.user);
+ if(req.method==='PATCH'&&String(req.query.action||'')==='publish')return publishLegalDocument(req,res);
+ if(['PATCH','PUT'].includes(req.method))return updateLegalDocumentDraft(req,res,next);
+ if(req.method==='GET'){
+  if(admin)return next();
+  try{
+   const [rows]=await pool.query("SELECT id,created_date,updated_date,document_type,title,content,version,status,created_by,published_at FROM legal_documents WHERE status='published' ORDER BY document_type ASC");
+   return res.json(rows);
+  }catch(error){return next(error);}
+ }
+ if(!admin)return res.status(403).json({error:'Only resort administrators can edit legal documents.'});
+ if(req.method==='DELETE')return res.status(405).json({error:'Legal document history is retained; drafts can be replaced by saving another draft.'});
+ if(req.method==='POST'){
+  req.body={...(req.body||{}),status:'draft',published_at:null,created_by:req.user.id};
+  return next();
+ }
+ return next();
+}
 async function acceptBooking(req,res){
  if(!isAdmin(req.user))return res.status(403).json({error:'Only resort administrators can accept bookings.'});
  const bookingId=String(req.query.id||'');
@@ -244,9 +337,61 @@ async function acceptBooking(req,res){
   return res.status(status).json({error:error.message});
  }finally{if(connection)connection.release();}
 }
-async function bookingAction(req,res,next){try{const entity=String(req.query.entity||'');const action=String(req.query.action||'');if(entity!=='Booking')return next();if(req.method==='GET'&&action==='availability')return sendAvailability(req,res);if(req.method==='PATCH'&&action==='accept')return acceptBooking(req,res);if(req.method==='PATCH'&&action==='request-reschedule')return requestReschedule(req,res);if(req.method==='PATCH'&&action==='resolve-reschedule')return rejectRescheduleRequest(req,res);if(req.method==='PATCH'&&action==='reschedule')return rescheduleBooking(req,res);if(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'rebooking_status'))return res.status(400).json({error:'Use the reschedule request and decision actions to change request status.'});if(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'booking_date'))return res.status(400).json({error:'Use a booking reschedule action to change reservation dates.'});if(['PATCH','PUT'].includes(req.method)&&req.body?.status==='confirmed')return res.status(400).json({error:'Use the booking acceptance action to confirm a reservation and verify its submitted payment.'});if(['PATCH','PUT'].includes(req.method)&&req.body?.payment_status==='paid')return res.status(400).json({error:'Payment verification is completed as part of booking acceptance.'});return next();}catch(error){return next(error);}}
+async function createBooking(req,res,next){
+ if(!req.user)return res.status(401).json({error:'Not authenticated.'});
+ let connection;
+ let transactionStarted=false;
+ try{
+  connection=await pool.getConnection();
+  await connection.beginTransaction();
+  transactionStarted=true;
+  const payload=req.body||{};
+  const cfg=MAP.Booking;
+  const record={};
+  for(const field of cfg.fields)if(Object.prototype.hasOwnProperty.call(payload,field))record[field]=payload[field];
+  record.id=record.id||id('booking');
+  record.created_date=now();
+  record.updated_date=record.created_date;
+  record.customer_email=req.user.email;
+  record.customer_user_id=req.user.id;
+  record.booking_reference=record.booking_reference||`KI-${cryptoRandom(4)}`;
+  record.status='pending';
+  record.payment_status=record.receipt_url?'pending_verification':'unpaid';
+  record.payment_proof_review=record.receipt_url?'needs_manual_review':null;
+  record.payment_proof_fingerprint=null;
+  if(record.receipt_url){
+   const proofPath=uploadedReceiptPath(record.receipt_url);
+   if(proofPath){
+    record.payment_proof_fingerprint=createHash('sha256').update(fs.readFileSync(proofPath)).digest('hex');
+    const [duplicates]=await connection.query('SELECT id FROM bookings WHERE payment_proof_fingerprint=? LIMIT 1',[record.payment_proof_fingerprint]);
+    if(duplicates.length)record.payment_proof_review='duplicate_needs_review';
+   }
+  }
+  await validate('Booking',record,null,connection);
+  await validateBookingSubmission(record,connection);
+  await validateBookingLegalAcceptance(record,payload,connection);
+  const cols=[];
+  const placeholders=[];
+  const values=[];
+  for(const field of cfg.fields){
+   if(!Object.prototype.hasOwnProperty.call(record,field))continue;
+   cols.push(`\`${field}\``);
+   placeholders.push('?');
+   values.push(serialize(cfg,field,record[field]));
+  }
+  await connection.query(`INSERT INTO \`bookings\` (${cols.join(',')}) VALUES (${placeholders.join(',')})`,values);
+  const [rows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[record.id]);
+  await connection.commit();
+  transactionStarted=false;
+  return res.status(201).json(deserialize(cfg,rows[0]||record));
+ }catch(error){
+  if(transactionStarted)try{await connection.rollback();}catch{}
+  return next(error);
+ }finally{if(connection)connection.release();}
+}
+async function bookingAction(req,res,next){try{const entity=String(req.query.entity||'');const action=String(req.query.action||'');if(entity!=='Booking')return next();if(req.method==='POST')return createBooking(req,res,next);if(req.method==='GET'&&action==='availability')return sendAvailability(req,res);if(req.method==='PATCH'&&action==='accept')return acceptBooking(req,res);if(req.method==='PATCH'&&action==='request-reschedule')return requestReschedule(req,res);if(req.method==='PATCH'&&action==='resolve-reschedule')return rejectRescheduleRequest(req,res);if(req.method==='PATCH'&&action==='reschedule')return rescheduleBooking(req,res);if(['PATCH','PUT'].includes(req.method)&&Object.keys(req.body||{}).some((key)=>['terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at'].includes(key)))return res.status(403).json({error:'Booking legal acceptance records cannot be edited after submission.'});if(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'rebooking_status'))return res.status(400).json({error:'Use the reschedule request and decision actions to change request status.'});if(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'booking_date'))return res.status(400).json({error:'Use a booking reschedule action to change reservation dates.'});if(['PATCH','PUT'].includes(req.method)&&req.body?.status==='confirmed')return res.status(400).json({error:'Use the booking acceptance action to confirm a reservation and verify its submitted payment.'});if(['PATCH','PUT'].includes(req.method)&&req.body?.payment_status==='paid')return res.status(400).json({error:'Payment verification is completed as part of booking acceptance.'});return next();}catch(error){return next(error);}}
 async function bookingCreationLock(req,res,next){const entity=String(req.query.entity||'');const bookingCreate=req.method==='POST'&&entity==='Booking';const manualScheduleWrite=entity==='UpcomingSchedule'&&(req.method==='POST'||(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'schedule_date')));if((!bookingCreate&&!manualScheduleWrite)||!req.user)return next();let connection;let acquired=false;let released=false;const release=async()=>{if(released||!connection)return;released=true;if(acquired)await releaseNamedLock(connection);connection.release();};try{connection=await pool.getConnection();const [rows]=await connection.query('SELECT GET_LOCK(?,10) AS acquired',[BOOKING_SCHEDULE_LOCK]);acquired=Number(rows[0]?.acquired)===1;if(!acquired){connection.release();return res.status(503).json({error:'Schedule is busy. Please try again.'});}res.once('finish',release);res.once('close',release);return next();}catch(error){if(connection&&!acquired)connection.release();return next(error);}}
-async function validate(entity,record,exclude){
+async function validate(entity,record,exclude,db=pool){
  if(entity==='Package'){
   if(!String(record.name||'').trim())throw Object.assign(new Error('Package name is required.'),{status:422});
   const prices=['day_tour_price','night_tour_price','twenty_two_hour_price','price'].map(x=>Number(record[x]||0));
@@ -254,14 +399,23 @@ async function validate(entity,record,exclude){
   if(record.is_active!==false){const [r]=await pool.query('SELECT id FROM packages WHERE LOWER(TRIM(name))=LOWER(TRIM(?)) AND is_active=1 AND id<>? LIMIT 1',[record.name,exclude||'']);if(r[0])throw Object.assign(new Error('An active package with this name already exists.'),{status:409});}
  }
  if(entity==='Booking'){
-  if(!exclude)await applyBookingPricing(record);
+  if(!exclude)await applyBookingPricing(record,db);
   const date=dateOnly(record.booking_date);
   if(!isValidDateKey(date)||!getTourTime(record.tour_type))throw Object.assign(new Error('Booking date and tour type must be valid.'),{status:422});
   if(date<=dateKeyFromDate(new Date()))throw Object.assign(new Error('Choose a future booking date.'),{status:422});
   const guests=Number(record.guest_count||0);
   if(guests<1)throw Object.assign(new Error('Guest count must be at least 1.'),{status:422});
-  if(record.package_id){const [p]=await pool.query('SELECT max_guests FROM packages WHERE id=? LIMIT 1',[record.package_id]);if(p[0]&&guests>Number(p[0].max_guests))throw Object.assign(new Error(`This package allows a maximum of ${p[0].max_guests} guests.`),{status:422});}
-  if(!exclude&&!await databaseScheduleIsAvailable(pool,date,record.tour_type))throw Object.assign(new Error('The selected schedule is unavailable. Please choose another date or time.'),{status:409});
+  if(record.package_id){const [p]=await db.query('SELECT max_guests FROM packages WHERE id=? LIMIT 1',[record.package_id]);if(p[0]&&guests>Number(p[0].max_guests))throw Object.assign(new Error(`This package allows a maximum of ${p[0].max_guests} guests.`),{status:422});}
+  if(!exclude&&!await databaseScheduleIsAvailable(db,date,record.tour_type,null,db!==pool))throw Object.assign(new Error('The selected schedule is unavailable. Please choose another date or time.'),{status:409});
+ }
+ if(entity==='LegalDocument'){
+  if(!['terms','privacy'].includes(record.document_type))throw httpError('Choose Terms & Conditions or Privacy Notice.',422);
+  if(!String(record.title||'').trim())throw httpError('A legal document title is required.',422);
+  if(!String(record.content||'').trim())throw httpError('Legal document content is required.',422);
+  if(String(record.content).length>100000)throw httpError('Legal document content must be 100,000 characters or fewer.',422);
+  if(!/^\d{1,4}(?:\.\d{1,4}){0,2}$/.test(String(record.version||'')))throw httpError('Use a version such as 1.0 or 1.1.',422);
+  const [duplicates]=await db.query('SELECT id FROM legal_documents WHERE document_type=? AND version=? AND id<>? LIMIT 1',[record.document_type,record.version,exclude||'']);
+  if(duplicates[0])throw httpError('That version already exists. Choose a new version number.',409);
  }
  if(entity==='Review'){const rating=Number(record.rating||0);if(rating<1||rating>5)throw Object.assign(new Error('Rating must be between 1 and 5.'),{status:422});}
 }
@@ -272,22 +426,38 @@ function blockPublicBookingEmailFilter(req,res,next){
  if(Object.prototype.hasOwnProperty.call(filter||{},'customer_email'))return res.status(403).json({error:'Sign in to view your reservations.'});
  return next();
 }
-async function applyBookingPricing(record){
+async function applyBookingPricing(record,db=pool){
  if(!record.package_id)throw httpError('Choose a package before submitting your reservation.',422);
- const [rows]=await pool.query('SELECT name,price,day_tour_price,night_tour_price,twenty_two_hour_price,max_guests FROM packages WHERE id=? AND is_active=1 LIMIT 1',[record.package_id]);
+ const [rows]=await db.query('SELECT name,price,day_tour_price,night_tour_price,twenty_two_hour_price,max_guests FROM packages WHERE id=? AND is_active=1 LIMIT 1',[record.package_id]);
  if(!rows[0])throw httpError('The selected package is unavailable. Please choose another package.',422);
  record.package_name=rows[0].name;
  Object.assign(record,quoteBooking({packageRecord:rows[0],tourType:record.tour_type,guestCount:record.guest_count,paymentType:record.payment_type||'downpayment'}));
 }
-async function validateBookingSubmission(record){
+async function validateBookingSubmission(record,db=pool){
  if(!String(record.customer_name||'').trim()||!String(record.customer_email||'').trim()||!String(record.customer_phone||'').trim())throw httpError('Your name, email, and phone number are required to submit a booking.',422);
  if(!String(record.payment_mode||'').trim()||!record.payment_qr_code_id)throw httpError('Choose a payment method before submitting your booking.',422);
- const [methods]=await pool.query('SELECT id,label FROM payment_qr_codes WHERE id=? AND is_active=1 LIMIT 1',[record.payment_qr_code_id]);
+ const [methods]=await db.query('SELECT id,label FROM payment_qr_codes WHERE id=? AND is_active=1 LIMIT 1',[record.payment_qr_code_id]);
  if(!methods[0])throw httpError('The selected payment method is unavailable. Refresh the page and choose another method.',422);
  record.payment_qr_code_label=methods[0].label;
  record.payment_mode=methods[0].label;
  if(!String(record.receipt_url||'').trim()||!uploadedReceiptPath(record.receipt_url))throw httpError('Upload a valid payment proof image before submitting your booking.',422);
  record.payment_status='pending_verification';
+}
+async function validateBookingLegalAcceptance(record,payload,db){
+ if(payload?.terms_accepted!==true||payload?.privacy_acknowledged!==true||payload?.privacy_consent!==true)throw httpError('Accept the Terms & Conditions, acknowledge the Privacy Notice, and give separate processing consent before booking.',422);
+ const [documents]=await db.query("SELECT id,document_type,version FROM legal_documents WHERE status='published' AND document_type IN ('terms','privacy') FOR UPDATE");
+ const terms=documents.find((document)=>document.document_type==='terms');
+ const privacy=documents.find((document)=>document.document_type==='privacy');
+ if(!terms||!privacy)throw httpError('Booking policies are not published yet. Please contact the resort.',503);
+ if(payload.terms_document_id!==terms.id||payload.terms_version!==terms.version||payload.privacy_document_id!==privacy.id||payload.privacy_version!==privacy.version)throw httpError('The booking policies changed. Review the current Terms & Conditions and Privacy Notice, then submit again.',409);
+ record.terms_document_id=terms.id;
+ record.terms_version=terms.version;
+ record.terms_accepted=1;
+ record.privacy_document_id=privacy.id;
+ record.privacy_version=privacy.version;
+ record.privacy_acknowledged=1;
+ record.privacy_consent=1;
+ record.legal_accepted_at=now();
 }
 async function enforceBookingNotice(req,res,next){try{const entity=String(req.query.entity||'');const patch=req.body||{};const cancelling=patch.status==='cancelled';const rebooking=patch.rebooking_status==='requested';if(!['PATCH','PUT'].includes(req.method)||entity!=='Booking'||(!cancelling&&!rebooking)||isAdmin(req.user))return next();const rid=String(req.query.id||'');if(!rid)return next();const [rows]=await pool.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[rid]);const booking=rows[0];if(!booking||String(booking.customer_email).toLowerCase()!==String(req.user?.email||'').toLowerCase())return next();if(cancelling&&(booking.status!=='pending'||(booking.payment_status||'unpaid')==='paid'))return res.status(409).json({error:'Only unpaid pending bookings can be cancelled online.'});if(rebooking&&(!['pending','confirmed'].includes(booking.status)||(booking.rebooking_status||'none')==='pending'||Number(booking.rebooking_count||0)>=1))return res.status(409).json({error:'This booking is not eligible for another rebooking request.'});const date=String(booking.booking_date||'');const startHour=booking.tour_type==='day_tour'?'08:00:00':['night_tour','22_hours'].includes(booking.tour_type)?'18:00:00':'';if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!startHour)return res.status(422).json({error:'This booking date cannot be checked for cancellation or rebooking.'});const startTime=new Date(`${date}T${startHour}+08:00`);if(Number.isNaN(startTime.getTime()))return res.status(422).json({error:'This booking date cannot be checked for cancellation or rebooking.'});const cutoff=startTime.getTime()-7*24*60*60*1000;if(Date.now()>cutoff)return res.status(409).json({error:'Cancellation and rebooking requests must be submitted at least 7 days before the reservation date. Requests within 7 days are not permitted.'});return next();}catch(error){return next(error);}}
 async function handler(req,res,next){try{const entity=String(req.query.entity||'');const cfg=MAP[entity];if(!cfg)return res.status(404).json({error:`Unsupported entity: ${entity}`});const table=cfg.table;const fields=cfg.fields;const method=req.method;const admin=isAdmin(req.user);if(entity==='LostItemReport'&&!admin)return res.status(403).json({error:'Forbidden.'});if(['ActivityLog','User'].includes(entity)&&!admin&&(method!=='GET'||!req.user))return res.status(403).json({error:'Forbidden.'});if(entity==='User'&&req.user?.role!=='super_admin'&&req.user?.app_role!=='super_admin')return res.status(403).json({error:'Forbidden.'});if(!admin&&['Booking','PaymentQrCode','SiteSetting'].includes(entity)&&method!=='GET')return res.status(403).json({error:'Forbidden.'});if(!admin&&entity==='Review'&&method!=='GET'&&method!=='POST')return res.status(403).json({error:'Forbidden.'});if(!admin&&['Package','ResortRule','UpcomingSchedule','FoundItem'].includes(entity)&&!['GET','POST'].includes(method))return res.status(403).json({error:'Forbidden.'});
@@ -300,4 +470,4 @@ function dateOnly(value){return value instanceof Date?value.toISOString().slice(
 function uploadedReceiptPath(receiptUrl){try{const pathname=new URL(String(receiptUrl||''),'http://local.invalid').pathname;const match=pathname.match(/(?:^|\/)uploads\/(.+)$/i);if(!match)return null;const relativePath=decodeURIComponent(match[1]);for(const rootDirectory of [uploadsDir,bundledUploadsDir]){const root=path.resolve(rootDirectory)+path.sep;const candidate=path.resolve(rootDirectory,relativePath);if(candidate.startsWith(root)&&fs.existsSync(candidate)&&fs.statSync(candidate).isFile())return candidate;}return null;}catch{return null;}}
 async function notificationAction(req,res,next){if(String(req.query.entity||'')!=='Notification')return next();if(!req.user)return res.status(401).json({error:'Not authenticated.'});const email=String(req.user.email||'').toLowerCase();const action=String(req.query.action||'');if(req.method==='GET'&&action==='unread-count'){const [rows]=await pool.query('SELECT COUNT(*) AS count FROM notifications WHERE LOWER(user_email)=? AND is_read=0',[email]);return res.json({count:Number(rows[0]?.count||0)});}if(req.method==='PATCH'&&action==='mark-all-read'){const [result]=await pool.query('UPDATE notifications SET is_read=1 WHERE LOWER(user_email)=? AND is_read=0',[email]);return res.json({success:true,updated:Number(result.affectedRows||0)});}if(req.method==='PATCH'&&!action){const notificationId=String(req.query.id||'');if(!notificationId||Object.keys(req.body||{}).length!==1||req.body?.is_read!==true)return res.status(403).json({error:'Only marking your own notification as read is allowed.'});const [result]=await pool.query('UPDATE notifications SET is_read=1 WHERE id=? AND LOWER(user_email)=?',[notificationId,email]);if(!result.affectedRows)return res.status(404).json({error:'Notification not found.'});return res.json({id:notificationId,is_read:true});}if(req.method==='GET'&&!action)return next();return res.status(405).json({error:'Method not allowed.'});}
 async function bookingEventNotifications(req,res,next){if(String(req.query.entity||'')!=='Booking'||!['POST','PATCH','PUT'].includes(req.method))return next();const isCreate=req.method==='POST';let before=null;if(!isCreate){const bookingId=String(req.query.id||'');if(bookingId){const [rows]=await pool.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[bookingId]);before=rows[0]||null;}}const sendJson=res.json.bind(res);res.json=(payload)=>{const result=sendJson(payload);if(res.statusCode<400){const booking=isCreate?payload:(payload?.data||payload);if(booking?.id){void (async()=>{if(isCreate){const description=`${booking.booking_reference||booking.id} · ${booking.package_name||'Package'} · ${dateOnly(booking.booking_date)}`;await notifySafely({email:booking.customer_email,eventKey:`booking:${booking.id}:submitted`,title:'Your booking is pending confirmation',description,link:'/MyBookings',entityId:booking.id});await notifyBookingAdmins(booking);if(booking.payment_status==='pending_verification'){await notifyBookingAdmins(booking,{eventKey:`booking:${booking.id}:proof-submitted`,title:'Payment proof submitted',description:`${booking.booking_reference||booking.id} · ${booking.payment_mode||booking.payment_qr_code_label||'Payment method'} · Awaiting manual review.`});}return;}if(!before)return;const old=deserialize(MAP.Booking,before);if(old.status!==booking.status){await notifySafely({email:booking.customer_email,eventKey:`booking:${booking.id}:status:${old.status}:${booking.status}:${booking.updated_date}`,title:booking.status==='confirmed'?'Your booking has been confirmed':`Booking ${String(booking.status||'updated').replace(/_/g,' ')}`,description:`${booking.booking_reference||booking.id} · ${booking.package_name||'Booking'} on ${dateOnly(booking.booking_date)}.`,link:'/MyBookings',entityId:booking.id});}if(old.payment_status!==booking.payment_status){await notifySafely({email:booking.customer_email,eventKey:`booking:${booking.id}:payment:${old.payment_status}:${booking.payment_status}:${booking.updated_date}`,title:booking.payment_status==='paid'?'Payment verified':'Payment status updated',description:`${booking.booking_reference||booking.id} · ${String(booking.payment_status||'').replace(/_/g,' ')}.`,link:'/MyBookings',entityId:booking.id});}if(dateOnly(old.booking_date)!==dateOnly(booking.booking_date)){const summary=`${booking.booking_reference||booking.id} · Old date: ${dateOnly(old.booking_date)}. New date: ${dateOnly(booking.booking_date)}.`;await notifySafely({email:booking.customer_email,eventKey:`booking:${booking.id}:rescheduled:${dateOnly(booking.booking_date)}`,title:'Your booking schedule has been updated',description:summary,link:'/MyBookings',entityId:booking.id});await notifyBookingAdmins({...booking,customer_name:before.customer_name},{eventKey:`booking:${booking.id}:schedule:${dateOnly(booking.booking_date)}`,title:`Booking schedule updated`,description:summary});}if(old.rebooking_status!=='pending'&&booking.rebooking_status==='pending'){await notifyBookingAdmins({...booking,customer_name:before.customer_name},{eventKey:`booking:${booking.id}:reschedule-request:${dateOnly(booking.rebooking_requested_date||booking.booking_date)}`,title:'Reschedule request received',description:'A reschedule request was submitted. Review the booking in reservation management.'});}})().catch(error=>console.error('Booking notifications failed',{code:error.code,bookingId:booking.id}));}}return result;};return next();}
-router.use(auth,enforceBookingNotice,bookingCreationLock,blockPublicBookingEmailFilter,bookingEventNotifications,bookingAction,notificationAction,handler); module.exports=router;
+router.use(auth,enforceBookingNotice,bookingCreationLock,blockPublicBookingEmailFilter,bookingEventNotifications,bookingAction,legalDocumentAction,notificationAction,handler); module.exports=router;
