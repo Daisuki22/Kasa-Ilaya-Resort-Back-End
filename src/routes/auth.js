@@ -17,6 +17,7 @@ const {
 
 const { auth, requireAuth } = require('../middleware/auth');
 const { sendMail } = require('../services/mail');
+const { isStrongPassword } = require('../services/passwordPolicy');
 
 const router = express.Router();
 const MAX_OTP_ATTEMPTS = 5;
@@ -687,10 +688,9 @@ router.post('/', async (req, res, next) => {
         });
       }
 
-      if (password.length < 8) {
+      if (!isStrongPassword(password)) {
         return res.status(422).json({
-          error:
-            'Password must be at least 8 characters.'
+          error: 'Password must be at least 10 characters and include an uppercase letter, lowercase letter, number, and special character.'
         });
       }
 
@@ -1364,10 +1364,9 @@ router.post('/', async (req, res, next) => {
         });
       }
 
-      if (next.length < 8) {
+      if (!isStrongPassword(next)) {
         return res.status(422).json({
-          error:
-            'Password must be at least 8 characters.'
+          error: 'Password must be at least 10 characters and include an uppercase letter, lowercase letter, number, and special character.'
         });
       }
 
@@ -1650,10 +1649,9 @@ router.post('/', async (req, res, next) => {
         });
       }
 
-      if (next.length < 8) {
+      if (!isStrongPassword(next)) {
         return res.status(422).json({
-          error:
-            'Password must be at least 8 characters.'
+          error: 'Password must be at least 10 characters and include an uppercase letter, lowercase letter, number, and special character.'
         });
       }
 

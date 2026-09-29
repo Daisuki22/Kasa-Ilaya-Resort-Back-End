@@ -1,17 +1,18 @@
 const express=require('express'); const router=express.Router(); const {pool}=require('../config/database'); const {id,now,publicUser,isAdmin}=require('../utils'); const {auth}=require('../middleware/auth');
 const {randomUUID,createHash}=require('node:crypto');
-const {verifyPaymentProofUploadToken}=require('../services/paymentProofUpload');
+const {getPaymentProofUploadClaims}=require('../services/paymentProofUpload');
+const {classifyPaymentProvider,createEmptyReceiptOcr,MIN_CONFIDENT_MISMATCH,MIN_CONFIDENT_VERIFICATION}=require('../services/receiptOcr');
 const fs=require('node:fs');
 const path=require('node:path');
 const {uploadsDir,bundledUploadsDir}=require('../config/uploads');
 const {createNotification,notifySafely,notifyBookingAdmins}=require('../services/notifications');
 const {quoteBooking}=require('../services/bookingPricing');
 const {expirePastPendingBookings}=require('../services/bookingExpiration');
-const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,dateKeyFromDate,getBookingStartDateTime,getTourTime,isScheduleAvailable,isValidDateKey}=require('../services/bookingSchedule');
+const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,dateKeyFromDate,getBookingEndDateTime,getBookingStartDateTime,getTourTime,isScheduleAvailable,isValidDateKey}=require('../services/bookingSchedule');
 const BOOKING_SCHEDULE_LOCK='kasa_ilaya_booking_schedule';
 const MAP={
  ActivityLog:{table:'activity_logs',fields:['id','created_date','updated_date','user_email','user_name','action','entity_type','entity_id','details']},
- Booking:{table:'bookings',fields:['id','created_date','updated_date','booking_reference','package_id','package_name','tour_type','booking_date','guest_count','customer_user_id','customer_name','customer_email','customer_phone','special_requests','total_amount','reservation_fee_amount','payment_type','payment_amount_due','payment_mode','payment_qr_code_id','payment_qr_code_label','receipt_url','payment_proof_review','payment_proof_fingerprint','terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','status','payment_status','additional_fee_amount','additional_fee_reason','additional_fee_status','rebooking_status','rebooking_original_date','rebooking_requested_date','rebooking_reason','rebooking_requested_at','rebooking_resolved_at','rebooking_resolution_note','rebooking_count']},
+ Booking:{table:'bookings',fields:['id','created_date','updated_date','booking_reference','package_id','package_name','tour_type','booking_date','guest_count','customer_user_id','customer_name','customer_email','customer_phone','special_requests','total_amount','reservation_fee_amount','payment_type','payment_amount_due','payment_mode','payment_qr_code_id','payment_qr_code_label','receipt_url','payment_proof_review','payment_proof_fingerprint','payment_proof_ocr_provider','payment_proof_ocr_amount','payment_proof_ocr_reference','payment_proof_ocr_date','payment_proof_ocr_confidence','terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','status','payment_status','additional_fee_amount','additional_fee_reason','additional_fee_status','additional_fee_paid_at','additional_fee_paid_by','rebooking_status','rebooking_original_date','rebooking_requested_date','rebooking_reason','rebooking_requested_at','rebooking_resolved_at','rebooking_resolution_note','rebooking_count']},
  FoundItem:{table:'found_items',fields:['id','created_date','updated_date','item_name','description','date_found','location_found','found_by','status','image_url','claimed_guest_name','claimed_contact','claimed_reservation_id','proof_of_ownership','released_by','date_claimed','is_active']},
  LostItemReport:{table:'lost_item_reports',fields:['id','created_date','updated_date','guest_name','reservation_number','item_lost','description','date_lost','contact_number','email','status','matched_item_id']},
  Package:{table:'packages',fields:['id','created_date','updated_date','name','description','tour_type','price','day_tour_price','night_tour_price','twenty_two_hour_price','max_guests','inclusions','gallery_images','image_url','is_active'],json:['inclusions','gallery_images'],bool:['is_active'],numeric:['price','day_tour_price','night_tour_price','twenty_two_hour_price','max_guests']},
@@ -61,7 +62,7 @@ async function rescheduleBooking(req,res){
   const requestedDate=(booking.rebooking_status||'none')==='pending'?dateOnly(booking.rebooking_requested_date):body.booking_date;
   if(!isValidDateKey(requestedDate))throw httpError('The reschedule request does not contain a valid requested date.',422);
   if((booking.rebooking_status||'none')==='pending'&&body.booking_date&&requestedDate!==body.booking_date)throw httpError('The approval date does not match the requested reschedule date.',409);
-  if(booking.status!=='confirmed')throw httpError('Only an accepted reservation can be rescheduled.',409);
+  if(!['pending','confirmed'].includes(booking.status))throw httpError('Only an active reservation can be rescheduled.',409);
   if(!admin&&((booking.rebooking_status||'none')==='pending'||Number(booking.rebooking_count||0)>=1))throw httpError('This reservation is not eligible for another reschedule.',409);
   if(requestedDate===dateOnly(booking.booking_date))throw httpError('Choose a different date from the current reservation.',422);
   const today=dateKeyFromDate(new Date());
@@ -137,7 +138,7 @@ async function requestReschedule(req,res){
   const booking=rows[0];
   if(!booking)throw httpError('Reservation not found.',404);
   if(String(booking.customer_email||'').toLowerCase()!==String(req.user.email||'').toLowerCase())throw httpError('You are not authorized to request a schedule change.',403);
-  if(booking.status!=='confirmed')throw httpError('Only an accepted reservation can be rescheduled.',409);
+  if(!['pending','confirmed'].includes(booking.status))throw httpError('Only an active reservation can request rescheduling.',409);
   if((booking.rebooking_status||'none')==='pending'){
    if(dateOnly(booking.rebooking_requested_date)===body.booking_date){
     await connection.commit();
@@ -150,9 +151,6 @@ async function requestReschedule(req,res){
   const originalDate=dateOnly(booking.booking_date);
   if(body.booking_date===originalDate)throw httpError('Choose a different date from the current reservation.',422);
   if(body.booking_date<=dateKeyFromDate(new Date()))throw httpError('Choose a future date for your reservation.',422);
-  const originalStart=getBookingStartDateTime(originalDate,booking.tour_type);
-  if(!originalStart)throw httpError('This reservation date cannot be checked for rescheduling.',422);
-  if(Date.now()>originalStart.getTime()-7*24*60*60*1000)throw httpError('Reschedule requests must be submitted at least 7 days before the reservation date.',409);
   if(!getBookingStartDateTime(body.booking_date,booking.tour_type)||!getTourTime(booking.tour_type))throw httpError('This reservation has an invalid tour schedule.',422);
   phase='validate_schedule_availability';
   if(!await databaseScheduleIsAvailable(connection,body.booking_date,booking.tour_type,booking.id,true))throw httpError('The selected schedule is unavailable. Please choose another date or time.',409);
@@ -338,6 +336,36 @@ async function acceptBooking(req,res){
   return res.status(status).json({error:error.message});
  }finally{if(connection)connection.release();}
 }
+async function markAdditionalFeePaid(req,res){
+ if(!isAdmin(req.user))return res.status(403).json({error:'Only resort administrators can record a damage fee payment.'});
+ const bookingId=String(req.query.id||'');
+ if(!bookingId)return res.status(422).json({error:'Missing booking id.'});
+ let connection;
+ let transactionStarted=false;
+ try{
+  connection=await pool.getConnection();
+  await connection.beginTransaction();
+  transactionStarted=true;
+  const [rows]=await connection.query('SELECT id,booking_reference,customer_name,customer_email,additional_fee_amount,additional_fee_status FROM bookings WHERE id=? FOR UPDATE',[bookingId]);
+  const booking=rows[0];
+  if(!booking)throw httpError('Booking not found.',404);
+  if(Number(booking.additional_fee_amount||0)<=0||booking.additional_fee_status==='pending')throw httpError('A billed damage fee is required before recording payment.',409);
+  if(booking.additional_fee_status==='paid')throw httpError('This damage fee has already been marked paid.',409);
+  const paidBy=req.user.full_name||req.user.name||'Administrator';
+  const amount=Number(booking.additional_fee_amount).toFixed(2);
+  await connection.query("UPDATE bookings SET additional_fee_status='paid',additional_fee_paid_at=NOW(),additional_fee_paid_by=?,updated_date=NOW() WHERE id=? AND additional_fee_status='unpaid'",[paidBy.slice(0,64),bookingId]);
+  await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,paidBy,'Damage Fee Marked Paid','Booking',booking.id,`Recorded damage fee payment for ${booking.booking_reference||booking.id}. Guest: ${booking.customer_name||booking.customer_email||'Unknown'}. Amount: ${amount}. Paid by: ${paidBy}.`]);
+  const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[bookingId]);
+  await connection.commit();
+  transactionStarted=false;
+  return res.json({success:true,data:deserialize(MAP.Booking,updatedRows[0])});
+ }catch(error){
+  if(transactionStarted)try{await connection.rollback();}catch{}
+  const status=error.status||500;
+  if(status>=500)return next(error);
+  return res.status(status).json({error:error.message});
+ }finally{if(connection)connection.release();}
+}
 async function createBooking(req,res,next){
  if(!req.user)return res.status(401).json({error:'Not authenticated.',request_id:req.requestId});
  const payload=req.body||{};
@@ -418,7 +446,39 @@ async function createBooking(req,res,next){
   return next(error);
  }finally{if(connection)connection.release();}
 }
-async function bookingAction(req,res,next){try{const entity=String(req.query.entity||'');const action=String(req.query.action||'');if(entity!=='Booking')return next();if(req.method==='POST')return createBooking(req,res,next);if(req.method==='GET'&&action==='availability')return sendAvailability(req,res);if(req.method==='PATCH'&&action==='accept')return acceptBooking(req,res);if(req.method==='PATCH'&&action==='request-reschedule')return requestReschedule(req,res);if(req.method==='PATCH'&&action==='resolve-reschedule')return rejectRescheduleRequest(req,res);if(req.method==='PATCH'&&action==='reschedule')return rescheduleBooking(req,res);if(['PATCH','PUT'].includes(req.method)&&Object.keys(req.body||{}).some((key)=>['terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at'].includes(key)))return res.status(403).json({error:'Booking legal acceptance records cannot be edited after submission.'});if(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'rebooking_status'))return res.status(400).json({error:'Use the reschedule request and decision actions to change request status.'});if(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'booking_date'))return res.status(400).json({error:'Use a booking reschedule action to change reservation dates.'});if(['PATCH','PUT'].includes(req.method)&&req.body?.status==='confirmed')return res.status(400).json({error:'Use the booking acceptance action to confirm a reservation and verify its submitted payment.'});if(['PATCH','PUT'].includes(req.method)&&req.body?.payment_status==='paid')return res.status(400).json({error:'Payment verification is completed as part of booking acceptance.'});return next();}catch(error){return next(error);}}
+async function bookingAction(req,res,next){
+ try{
+  const entity=String(req.query.entity||'');
+  const action=String(req.query.action||'');
+  if(entity!=='Booking')return next();
+  if(req.method==='POST')return createBooking(req,res,next);
+  if(req.method==='GET'&&action==='availability')return sendAvailability(req,res);
+  if(req.method==='PATCH'&&action==='accept')return acceptBooking(req,res);
+  if(req.method==='PATCH'&&action==='mark-additional-fee-paid')return markAdditionalFeePaid(req,res);
+  if(req.method==='PATCH'&&action==='request-reschedule')return requestReschedule(req,res);
+  if(req.method==='PATCH'&&action==='resolve-reschedule')return rejectRescheduleRequest(req,res);
+  if(req.method==='PATCH'&&action==='reschedule')return rescheduleBooking(req,res);
+  if(['PATCH','PUT'].includes(req.method)&&Object.keys(req.body||{}).some((key)=>['terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','additional_fee_paid_at','additional_fee_paid_by'].includes(key)))return res.status(403).json({error:'Booking legal acceptance and damage-payment audit records cannot be edited directly.'});
+  if(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'rebooking_status'))return res.status(400).json({error:'Use the reschedule request and decision actions to change request status.'});
+  if(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'booking_date'))return res.status(400).json({error:'Use a booking reschedule action to change reservation dates.'});
+  if(['PATCH','PUT'].includes(req.method)&&req.body?.status==='confirmed')return res.status(400).json({error:'Use the booking acceptance action to confirm a reservation and verify its submitted payment.'});
+  if(['PATCH','PUT'].includes(req.method)&&req.body?.status==='completed'){
+   await expirePastPendingBookings();
+   const bookingId=String(req.query.id||'');
+   const [rows]=await pool.query('SELECT status FROM bookings WHERE id=? LIMIT 1',[bookingId]);
+   if(rows[0]?.status!=='confirmed')return res.status(409).json({error:'Only an active confirmed reservation can be marked completed.'});
+  }
+  const modifiesDamageFee=['additional_fee_amount','additional_fee_reason','additional_fee_status'].some((field)=>Object.prototype.hasOwnProperty.call(req.body||{},field));
+  if(['PATCH','PUT'].includes(req.method)&&entity==='Booking'&&modifiesDamageFee){
+   if(req.body.additional_fee_status==='paid')return res.status(400).json({error:'Use the damage-fee payment confirmation action to record payment.'});
+   const [feeRows]=await pool.query('SELECT additional_fee_status FROM bookings WHERE id=? LIMIT 1',[String(req.query.id||'')]);
+   if(feeRows[0]?.additional_fee_status==='paid')return res.status(409).json({error:'A paid damage fee cannot be changed.'});
+  }
+  if(['PATCH','PUT'].includes(req.method)&&req.body?.payment_status==='paid')return res.status(400).json({error:'Payment verification is completed as part of booking acceptance.'});
+  if(['PATCH','PUT'].includes(req.method)&&req.body?.additional_fee_status==='paid')return res.status(400).json({error:'Use the damage-fee payment confirmation action to record payment.'});
+  return next();
+ }catch(error){return next(error);}
+}
 async function bookingCreationLock(req,res,next){const entity=String(req.query.entity||'');const bookingCreate=req.method==='POST'&&entity==='Booking';const manualScheduleWrite=entity==='UpcomingSchedule'&&(req.method==='POST'||(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'schedule_date')));if((!bookingCreate&&!manualScheduleWrite)||!req.user)return next();let connection;let acquired=false;let released=false;const release=async()=>{if(released||!connection)return;released=true;if(acquired)await releaseNamedLock(connection);connection.release();};try{connection=await pool.getConnection();const [rows]=await connection.query('SELECT GET_LOCK(?,10) AS acquired',[BOOKING_SCHEDULE_LOCK]);acquired=Number(rows[0]?.acquired)===1;if(!acquired){connection.release();console.warn('Booking schedule lock unavailable',{requestId:req.requestId,method:req.method,path:req.path,stage:'acquire_schedule_lock'});return res.status(503).json({error:'Schedule is busy. Please try again.',request_id:req.requestId});}res.once('finish',release);res.once('close',release);return next();}catch(error){if(connection&&!acquired)connection.release();return next(error);}}
 async function validate(entity,record,exclude,db=pool){
  if(entity==='Package'){
@@ -470,7 +530,43 @@ async function validateBookingSubmission(record,db=pool,proofToken=null,userId=n
  record.payment_qr_code_label=methods[0].label;
  record.payment_mode=methods[0].label;
  if(!String(record.receipt_url||'').trim()||!uploadedReceiptPath(record.receipt_url))throw httpError('Upload a valid payment proof image before submitting your booking.',422);
- if(!verifyPaymentProofUploadToken(proofToken,{userId,fileUrl:record.receipt_url,secret:process.env.JWT_SECRET}))throw httpError('Upload a new payment proof using your signed-in account before submitting this booking.',403);
+ const claims=getPaymentProofUploadClaims(proofToken,{userId,fileUrl:record.receipt_url,secret:process.env.JWT_SECRET});
+ if(!claims)throw httpError('Upload a new payment proof using your signed-in account before submitting this booking.',403);
+ const ocr=claims.ocr||createEmptyReceiptOcr();
+ const ocrConfident=Number(ocr.confidence)>=MIN_CONFIDENT_MISMATCH;
+ const detectedProvider=classifyPaymentProvider(ocr.provider);
+ const selectedProvider=classifyPaymentProvider(methods[0].label);
+ if(ocrConfident&&detectedProvider&&selectedProvider&&detectedProvider!==selectedProvider)throw httpError('Uploaded receipt does not match the selected payment method.',422);
+ const ocrAmount=Number(ocr.amount);
+ const amountValid=Number.isFinite(ocrAmount)&&ocrAmount>0;
+ if(ocrConfident&&amountValid&&Math.abs(ocrAmount-Number(record.payment_amount_due))>0.01)throw httpError('The amount detected on the receipt does not match the required payment amount.',422);
+ if(ocrConfident&&ocr.status==='failed')throw httpError('The uploaded receipt appears to show a failed payment.',422);
+ const reference=typeof ocr.reference==='string'?ocr.reference.trim().slice(0,128):'';
+ let duplicateReference=false;
+ if(reference){
+  const [duplicates]=await db.query('SELECT id FROM bookings WHERE LOWER(payment_proof_ocr_reference)=LOWER(?) LIMIT 1',[reference]);
+  duplicateReference=duplicates.some((booking)=>booking.id!==record.id);
+ }
+ const receiptDate=typeof ocr.date==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(ocr.date)?ocr.date:null;
+ let dateNeedsReview=false;
+ if(receiptDate){
+  const today=dateKeyFromDate(new Date());
+  const daysOld=Math.floor((Date.parse(`${today}T00:00:00Z`)-Date.parse(`${receiptDate}T00:00:00Z`))/86400000);
+  dateNeedsReview=daysOld>30||daysOld< -1;
+ }
+ const referenceRequired=['gcash','maya','paypal','bdo','bpi','unionbank','seabank','gotyme','metrobank'].includes(detectedProvider);
+ const allSignalsMatch=Number(ocr.confidence)>=MIN_CONFIDENT_VERIFICATION
+  &&Boolean(detectedProvider&&selectedProvider===detectedProvider)
+  &&amountValid&&Math.abs(ocrAmount-Number(record.payment_amount_due))<=0.01
+  &&(!referenceRequired||Boolean(reference))&&Boolean(receiptDate)
+  &&!dateNeedsReview&&ocr.status==='successful';
+ record.payment_proof_ocr_provider=detectedProvider;
+ record.payment_proof_ocr_amount=amountValid?Number(ocrAmount.toFixed(2)):null;
+ record.payment_proof_ocr_reference=reference||null;
+ record.payment_proof_ocr_date=receiptDate;
+ record.payment_proof_ocr_confidence=Number(ocr.confidence)||0;
+ if(duplicateReference||record.payment_proof_review==='duplicate_needs_review')record.payment_proof_review='duplicate_needs_review';
+ else record.payment_proof_review=allSignalsMatch?'verified':'needs_manual_review';
  record.payment_status='pending_verification';
 }
 async function validateBookingLegalAcceptance(record,payload,db){
@@ -489,7 +585,7 @@ async function validateBookingLegalAcceptance(record,payload,db){
  record.privacy_consent=1;
  record.legal_accepted_at=now();
 }
-async function enforceBookingNotice(req,res,next){try{const entity=String(req.query.entity||'');const patch=req.body||{};const cancelling=patch.status==='cancelled';const rebooking=patch.rebooking_status==='requested';if(!['PATCH','PUT'].includes(req.method)||entity!=='Booking'||(!cancelling&&!rebooking)||isAdmin(req.user))return next();const rid=String(req.query.id||'');if(!rid)return next();const [rows]=await pool.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[rid]);const booking=rows[0];if(!booking||String(booking.customer_email).toLowerCase()!==String(req.user?.email||'').toLowerCase())return next();if(cancelling&&(booking.status!=='pending'||(booking.payment_status||'unpaid')==='paid'))return res.status(409).json({error:'Only unpaid pending bookings can be cancelled online.'});if(rebooking&&(!['pending','confirmed'].includes(booking.status)||(booking.rebooking_status||'none')==='pending'||Number(booking.rebooking_count||0)>=1))return res.status(409).json({error:'This booking is not eligible for another rebooking request.'});const date=String(booking.booking_date||'');const startHour=booking.tour_type==='day_tour'?'08:00:00':['night_tour','22_hours'].includes(booking.tour_type)?'18:00:00':'';if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!startHour)return res.status(422).json({error:'This booking date cannot be checked for cancellation or rebooking.'});const startTime=new Date(`${date}T${startHour}+08:00`);if(Number.isNaN(startTime.getTime()))return res.status(422).json({error:'This booking date cannot be checked for cancellation or rebooking.'});const cutoff=startTime.getTime()-7*24*60*60*1000;if(Date.now()>cutoff)return res.status(409).json({error:'Cancellation and rebooking requests must be submitted at least 7 days before the reservation date. Requests within 7 days are not permitted.'});return next();}catch(error){return next(error);}}
+async function enforceBookingNotice(req,res,next){try{const entity=String(req.query.entity||'');const patch=req.body||{};const cancelling=patch.status==='cancelled';const rebooking=patch.rebooking_status==='requested';if(!['PATCH','PUT'].includes(req.method)||entity!=='Booking'||(!cancelling&&!rebooking)||isAdmin(req.user))return next();const rid=String(req.query.id||'');if(!rid)return next();const [rows]=await pool.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[rid]);const booking=rows[0];if(!booking||String(booking.customer_email).toLowerCase()!==String(req.user?.email||'').toLowerCase())return next();if(cancelling&&(booking.status!=='pending'||(booking.payment_status||'unpaid')==='paid'))return res.status(409).json({error:'Only unpaid pending bookings can be cancelled online.'});if(rebooking&&(!['pending','confirmed'].includes(booking.status)||(booking.rebooking_status||'none')==='pending'||Number(booking.rebooking_count||0)>=1))return res.status(409).json({error:'This booking is not eligible for another rebooking request.'});if(rebooking)return next();const date=String(booking.booking_date||'');const startHour=booking.tour_type==='day_tour'?'08:00:00':['night_tour','22_hours'].includes(booking.tour_type)?'18:00:00':'';if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!startHour)return res.status(422).json({error:'This booking date cannot be checked for cancellation.'});const startTime=new Date(`${date}T${startHour}+08:00`);if(Number.isNaN(startTime.getTime()))return res.status(422).json({error:'This booking date cannot be checked for cancellation.'});const cutoff=startTime.getTime()-7*24*60*60*1000;if(Date.now()>cutoff)return res.status(409).json({error:'Cancellation is not available within 7 days of the reservation date. You may request a reschedule instead.'});return next();}catch(error){return next(error);}}
 async function handler(req,res,next){try{const entity=String(req.query.entity||'');const cfg=MAP[entity];if(!cfg)return res.status(404).json({error:`Unsupported entity: ${entity}`});const table=cfg.table;const fields=cfg.fields;const method=req.method;const admin=isAdmin(req.user);if(entity==='LostItemReport'&&!admin)return res.status(403).json({error:'Forbidden.'});if(['ActivityLog','User'].includes(entity)&&!admin&&(method!=='GET'||!req.user))return res.status(403).json({error:'Forbidden.'});if(entity==='User'&&req.user?.role!=='super_admin'&&req.user?.app_role!=='super_admin')return res.status(403).json({error:'Forbidden.'});if(!admin&&['Booking','PaymentQrCode','SiteSetting'].includes(entity)&&method!=='GET')return res.status(403).json({error:'Forbidden.'});if(!admin&&entity==='Review'&&method!=='GET'&&method!=='POST')return res.status(403).json({error:'Forbidden.'});if(!admin&&['Package','ResortRule','UpcomingSchedule','FoundItem'].includes(entity)&&!['GET','POST'].includes(method))return res.status(403).json({error:'Forbidden.'});
 if(method==='GET'){if(entity==='Booking')await expirePastPendingBookings();const where=[],vals=[];if(entity==='Notification'){if(!req.user)return res.status(401).json({error:'Not authenticated.'});where.push('LOWER(user_email)=LOWER(?)');vals.push(req.user.email);}let filter={};try{filter=req.query.filter?JSON.parse(req.query.filter):{};}catch{}for(const [f,v] of Object.entries(filter)){if(!fields.includes(f))continue;if(Array.isArray(v)&&v.length){where.push(`\`${f}\` IN (${v.map(()=>'?').join(',')})`);vals.push(...v.map(x=>serialize(cfg,f,x)));}else{where.push(`\`${f}\`=?`);vals.push(serialize(cfg,f,v));}}if(!admin&&['Package','PaymentQrCode','ResortRule','FoundItem'].includes(entity)){where.push('is_active=1');}if(!admin&&entity==='Review'){where.push('is_approved=1');}if(entity==='ActivityLog'&&!admin){if(!req.user)return res.status(403).json({error:'Forbidden.'});where.push('user_email=?');vals.push(req.user.email);}if(entity==='Booking'&&!admin&&req.user){where.push('LOWER(customer_email)=LOWER(?)');vals.push(req.user.email);}if(entity==='Booking'&&!req.user&&!filter.customer_email){where.push("status IN ('pending','confirmed','completed')");}let sql=`SELECT * FROM \`${table}\``;if(where.length)sql+=' WHERE '+where.join(' AND ');const sort=String(req.query.sort||'');if(sort){const desc=sort.startsWith('-'),sf=desc?sort.slice(1):sort;if(fields.includes(sf))sql+=` ORDER BY \`${sf}\` ${desc?'DESC':'ASC'}`;}if(/^\d+$/.test(String(req.query.limit||'')))sql+=` LIMIT ${Math.min(500,Number(req.query.limit))} OFFSET ${Math.max(0,/^\d+$/.test(String(req.query.offset||''))?Number(req.query.offset):0)}`;const [rows]=await pool.query(sql,vals);return res.json(rows.map(r=>{const item=deserialize(cfg,r);if(entity==='Booking'&&!admin&&(!req.user||String(item.customer_email||'').toLowerCase()!==String(req.user.email||'').toLowerCase()))return {id:item.id,package_id:item.package_id,package_name:item.package_name,tour_type:item.tour_type,booking_date:item.booking_date,guest_count:item.guest_count,status:item.status};return item;}));}
 if(method==='POST'){if(!admin&&!['ActivityLog','Booking','Review'].includes(entity)&&!(entity==='FoundItem'&&req.user))return res.status(403).json({error:'Forbidden.'});if(!req.user&&['ActivityLog','Booking','Review','FoundItem'].includes(entity))return res.status(401).json({error:'Not authenticated.'});const p=req.body||{},n=now(),record={};for(const f of fields)if(Object.prototype.hasOwnProperty.call(p,f))record[f]=p[f];record.id=record.id||id(entity.toLowerCase());record.created_date=record.created_date||n;record.updated_date=n;if(entity==='ActivityLog'&&!admin){record.user_email=req.user.email;record.user_name=req.user.full_name;}if(entity==='Booking'){record.customer_email=req.user.email;record.booking_reference=record.booking_reference||`KI-${cryptoRandom(4)}`;record.status='pending';record.payment_status=record.receipt_url?'pending_verification':'unpaid';record.payment_proof_review=record.receipt_url?'needs_manual_review':null;record.payment_proof_fingerprint=null;if(record.receipt_url){const proofPath=uploadedReceiptPath(record.receipt_url);if(proofPath){record.payment_proof_fingerprint=createHash('sha256').update(fs.readFileSync(proofPath)).digest('hex');const [duplicates]=await pool.query('SELECT id FROM bookings WHERE payment_proof_fingerprint=? LIMIT 1',[record.payment_proof_fingerprint]);if(duplicates.length)record.payment_proof_review='duplicate_needs_review';}}}if(entity==='Review'&&!admin){const [bookings]=await pool.query('SELECT id,booking_reference,package_name,customer_name,customer_email,status FROM bookings WHERE id=? LIMIT 1',[record.booking_id]);const booking=bookings[0];if(!booking||String(booking.customer_email).toLowerCase()!==String(req.user.email).toLowerCase()||booking.status!=='completed')return res.status(403).json({error:'A review can only be submitted for your completed booking.'});Object.assign(record,{booking_reference:booking.booking_reference,package_name:booking.package_name,guest_name:booking.customer_name,guest_email:booking.customer_email});}if(entity==='FoundItem'&&!admin){delete record.is_active;delete record.status;record.found_by=req.user.full_name||req.user.email;record.status='unclaimed';record.is_active=false;}if(entity==='Package'){record.is_active=record.is_active!==false;record.price=Number(record.price||0);record.max_guests=Number(record.max_guests||1);}if(entity==='FoundItem'&&admin)record.status=record.status||'unclaimed';if(entity==='LostItemReport')record.status=record.status||'searching';await validate(entity,record);if(entity==='Booking')await validateBookingSubmission(record);const cols=[],qs=[],vals=[];for(const f of fields)if(Object.prototype.hasOwnProperty.call(record,f)){cols.push(`\`${f}\``);qs.push('?');vals.push(serialize(cfg,f,record[f]));}await pool.query(`INSERT INTO \`${table}\` (${cols.join(',')}) VALUES (${qs.join(',')})`,vals);const [r]=await pool.query(`SELECT * FROM \`${table}\` WHERE id=? LIMIT 1`,[record.id]);return res.status(201).json(deserialize(cfg,r[0]||record));}

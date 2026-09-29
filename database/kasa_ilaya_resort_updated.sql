@@ -204,6 +204,11 @@ CREATE TABLE `bookings` (
   `receipt_url` text DEFAULT NULL,
   `payment_proof_review` varchar(32) DEFAULT NULL,
   `payment_proof_fingerprint` char(64) DEFAULT NULL,
+  `payment_proof_ocr_provider` varchar(32) DEFAULT NULL,
+  `payment_proof_ocr_amount` decimal(10,2) DEFAULT NULL,
+  `payment_proof_ocr_reference` varchar(128) DEFAULT NULL,
+  `payment_proof_ocr_date` date DEFAULT NULL,
+  `payment_proof_ocr_confidence` decimal(5,2) DEFAULT NULL,
   `terms_document_id` varchar(64) DEFAULT NULL,
   `terms_version` varchar(32) DEFAULT NULL,
   `terms_accepted` tinyint(1) NOT NULL DEFAULT 0,
@@ -217,6 +222,8 @@ CREATE TABLE `bookings` (
   `additional_fee_amount` decimal(10,2) NOT NULL DEFAULT 0.00,
   `additional_fee_reason` text DEFAULT NULL,
   `additional_fee_status` enum('pending','unpaid','paid') NOT NULL DEFAULT 'unpaid',
+  `additional_fee_paid_at` datetime DEFAULT NULL,
+  `additional_fee_paid_by` varchar(64) DEFAULT NULL,
   `rebooking_status` enum('none','pending','approved','declined') NOT NULL DEFAULT 'none',
   `rebooking_original_date` date DEFAULT NULL,
   `rebooking_requested_date` date DEFAULT NULL,
@@ -225,7 +232,8 @@ CREATE TABLE `bookings` (
   `rebooking_resolved_at` datetime DEFAULT NULL,
   `rebooking_resolution_note` text DEFAULT NULL,
   `rebooking_count` int(11) NOT NULL DEFAULT 0,
-  KEY `idx_bookings_payment_proof_fingerprint` (`payment_proof_fingerprint`)
+  KEY `idx_bookings_payment_proof_fingerprint` (`payment_proof_fingerprint`),
+  KEY `idx_bookings_payment_proof_ocr_reference` (`payment_proof_ocr_reference`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --

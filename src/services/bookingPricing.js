@@ -1,4 +1,4 @@
-const ADDITIONAL_GUEST_RATE = 250;
+const ADDITIONAL_GUEST_RATE = 150;
 const RESERVATION_FEE_RATE = 0.15;
 const PRICE_FIELDS = {
   day_tour: "day_tour_price",

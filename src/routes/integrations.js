@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('node:path');
 const fs = require('node:fs');
-const { randomBytes } = require('node:crypto');
+const { randomBytes, createHash } = require('node:crypto');
 const { sendMail } = require('../services/mail');
 const { pool } = require('../config/database');
 const { uploadsDir, temporaryUploadsDir } = require('../config/uploads');
@@ -10,6 +10,7 @@ const { auth } = require('../middleware/auth');
 const { isAdmin } = require('../utils');
 const config = require('../config/env');
 const { createPaymentProofUploadToken } = require('../services/paymentProofUpload');
+const { createEmptyReceiptOcr, recognizeReceipt } = require('../services/receiptOcr');
 
 const router = express.Router();
 const upload = multer({ dest: temporaryUploadsDir, limits: { fileSize: 8 * 1024 * 1024 } });
@@ -83,14 +84,48 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
       fs.mkdirSync(directory, { recursive: true });
       fs.renameSync(req.file.path, target);
       const fileUrl = `/uploads/${month}/${name}`;
+      if (purpose === 'payment_receipt') {
+        let ocr = createEmptyReceiptOcr();
+        try {
+          ocr = await recognizeReceipt(target);
+        } catch (error) {
+          console.warn('Payment receipt OCR unavailable; keeping proof in manual review', {
+            requestId: req.requestId,
+            code: error.code,
+            name: error.name,
+          });
+        }
+        const fingerprint = createHash('sha256').update(fs.readFileSync(target)).digest('hex');
+        const [duplicateFiles] = await pool.query(
+          'SELECT id FROM bookings WHERE payment_proof_fingerprint=? LIMIT 1',
+          [fingerprint]
+        );
+        const ocrSummary = {
+          provider: ocr.provider,
+          amount: ocr.amount,
+          reference: ocr.reference,
+          date: ocr.date,
+          confidence: ocr.confidence,
+          status: ocr.status,
+          duplicate_image: duplicateFiles.length > 0,
+        };
+        return res.json({
+          file_url: fileUrl,
+          purpose,
+          proof_upload_token: createPaymentProofUploadToken({
+            userId: req.user.id,
+            fileUrl,
+            secret: config.jwtSecret,
+            ocr: ocrSummary,
+          }),
+          validation: 'pending_review',
+          ocr_summary: ocrSummary,
+          message: 'Receipt content was scanned for review signals. An authorized admin still needs to verify the original proof.',
+        });
+      }
       return res.json({
         file_url: fileUrl,
         purpose,
-        ...(purpose === 'payment_receipt' ? {
-          proof_upload_token: createPaymentProofUploadToken({ userId: req.user.id, fileUrl, secret: config.jwtSecret }),
-          validation: 'manual_review',
-          message: 'Image file checks passed. Payment details and authenticity require authorized admin review.',
-        } : {}),
       });
     }
 

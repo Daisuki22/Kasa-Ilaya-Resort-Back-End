@@ -17,10 +17,10 @@ test('calculates numeric package, additional guest, reservation fee, and downpay
     guestCount: '4',
     paymentType: 'downpayment',
   }), {
-    total_amount: 10750,
-    reservation_fee_amount: 1612.5,
+    total_amount: 10450,
+    reservation_fee_amount: 1567.5,
     payment_type: 'downpayment',
-    payment_amount_due: 1612.5,
+    payment_amount_due: 1567.5,
   });
 });
 
@@ -32,9 +32,22 @@ test('calculates full payment and falls back to the package base price when a to
     paymentType: 'full_payment',
   });
 
-  assert.equal(quote.total_amount, 12250);
-  assert.equal(quote.reservation_fee_amount, 1837.5);
-  assert.equal(quote.payment_amount_due, 12250);
+  assert.equal(quote.total_amount, 12150);
+  assert.equal(quote.reservation_fee_amount, 1822.5);
+  assert.equal(quote.payment_amount_due, 12150);
+});
+
+test('charges only for guests beyond the one included in the package price', () => {
+  const quoteForAdditionalGuests = (additionalGuests) => quoteBooking({
+    packageRecord: { price: '7000.00', day_tour_price: '7000.00', max_guests: 8 },
+    tourType: 'day_tour',
+    guestCount: additionalGuests + 1,
+    paymentType: 'full_payment',
+  });
+
+  assert.equal(quoteForAdditionalGuests(0).total_amount, 7000);
+  assert.equal(quoteForAdditionalGuests(1).total_amount, 7150);
+  assert.equal(quoteForAdditionalGuests(5).total_amount, 7750);
 });
 
 test('rejects invalid tour, fractional guests, guest limits, missing price, and payment type', () => {

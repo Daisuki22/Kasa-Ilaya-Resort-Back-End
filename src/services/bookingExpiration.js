@@ -1,9 +1,10 @@
 const { pool } = require('../config/database');
-const { dateKeyFromDate } = require('./bookingSchedule');
+const { dateKeyFromDate, getBookingEndDateTime } = require('./bookingSchedule');
 const { notifySafely } = require('./notifications');
 
 async function expirePastPendingBookings() {
-  const today = dateKeyFromDate(new Date());
+  const currentTime = new Date();
+  const today = dateKeyFromDate(currentTime);
   const connection = await pool.getConnection();
   let transactionStarted = false;
   let expired = [];
@@ -12,10 +13,14 @@ async function expirePastPendingBookings() {
     await connection.beginTransaction();
     transactionStarted = true;
     const [rows] = await connection.query(
-      "SELECT id,booking_reference,customer_email,package_name,booking_date FROM bookings WHERE status='pending' AND booking_date<? FOR UPDATE",
+      "SELECT id,booking_reference,customer_email,package_name,DATE_FORMAT(booking_date,'%Y-%m-%d') AS booking_date,tour_type FROM bookings WHERE status='pending' AND booking_date<=? FOR UPDATE",
       [today]
     );
-    expired = rows;
+    expired = rows.filter((booking) => {
+      const bookingDate = String(booking.booking_date || '').slice(0, 10);
+      const endTime = getBookingEndDateTime(bookingDate, booking.tour_type);
+      return endTime && endTime <= currentTime;
+    });
     if (expired.length) {
       const placeholders = expired.map(() => '?').join(',');
       await connection.query(

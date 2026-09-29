@@ -71,10 +71,20 @@ const getBookingStartDateTime = (bookingDate, tourType) => {
   return new Date(`${bookingDate}T${time}:00+08:00`);
 };
 
+const getBookingEndDateTime = (bookingDate, tourType) => {
+  const time = getTourTime(tourType)?.end;
+  if (!time || !isValidDateKey(bookingDate)) return null;
+  const endDate = ['night_tour', '22_hours'].includes(tourType)
+    ? addDateKeyDays(bookingDate, 1)
+    : bookingDate;
+  return new Date(`${endDate}T${time}:00+08:00`);
+};
+
 module.exports = {
   ACTIVE_BOOKING_STATUSES,
   addDateKeyDays,
   dateKeyFromDate,
+  getBookingEndDateTime,
   getBookingStartDateTime,
   getOccupiedDateKeys,
   getTourTime,
