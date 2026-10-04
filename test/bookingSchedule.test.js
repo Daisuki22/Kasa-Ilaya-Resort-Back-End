@@ -10,7 +10,13 @@ const {
   isCancellationDateEligible,
   isBookingCancellationAllowed,
   isValidDateKey,
+  getTodayManilaDate,
 } = require("../src/services/bookingSchedule");
+
+test("today uses the Asia/Manila calendar date rather than the UTC date", () => {
+  assert.equal(getTodayManilaDate(new Date("2026-10-03T17:00:00.000Z")), "2026-10-04");
+  assert.equal(getTodayManilaDate(new Date("2026-10-04T16:00:00.000Z")), "2026-10-05");
+});
 
 test("accepts real ISO date keys and rejects malformed calendar dates", () => {
   assert.equal(isValidDateKey("2026-10-05"), true);

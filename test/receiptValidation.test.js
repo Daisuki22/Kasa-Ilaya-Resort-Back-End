@@ -32,6 +32,11 @@ test('receipt date equal to the latest allowed local date passes the date check'
   assert.equal(result.declineReason, null);
 });
 
+test('a future receipt date is declined as invalid', () => {
+  const result = validateReceiptSignals({ ...base, ocr: { ...validReceipt, date: '2026-10-05' } });
+  assert.equal(result.declineReason, 'Receipt date is invalid. Only receipts dated today are accepted. Receipt date: 2026-10-05. Required date: 2026-10-04.');
+});
+
 test('a confidently mismatched receipt amount is declined', () => {
   const result = validateReceiptSignals({ ...base, ocr: { ...validReceipt, amount: 1000 } });
   assert.equal(result.declineReason, 'Payment amount does not match required amount.');
@@ -52,8 +57,8 @@ test('a confidently detected recipient account mismatch is declined', () => {
 });
 
 test('a receipt dated before the latest allowed local date is declined with both dates', () => {
-  const result = validateReceiptSignals({ ...base, ocr: { ...validReceipt, date: '2026-10-03' } });
-  assert.equal(result.declineReason, 'Receipt is outdated. The uploaded receipt date is 2026-10-03, but the latest allowed receipt date is 2026-10-04.');
+  const result = validateReceiptSignals({ ...base, ocr: { ...validReceipt, date: '2026-09-30' } });
+  assert.equal(result.declineReason, 'Receipt is outdated. Only receipts dated today are accepted. Receipt date: 2026-09-30. Required date: 2026-10-04.');
 });
 
 test('an outdated date takes priority over amount and payment method mismatches', () => {
@@ -61,7 +66,7 @@ test('an outdated date takes priority over amount and payment method mismatches'
     ...base,
     ocr: { ...validReceipt, date: '2026-09-30', amount: 1000, provider: 'gcash' },
   });
-  assert.equal(result.declineReason, 'Receipt is outdated. The uploaded receipt date is 2026-09-30, but the latest allowed receipt date is 2026-10-04.');
+  assert.equal(result.declineReason, 'Receipt is outdated. Only receipts dated today are accepted. Receipt date: 2026-09-30. Required date: 2026-10-04.');
 });
 
 test('unreadable or incomplete receipts remain pending for manual review', () => {

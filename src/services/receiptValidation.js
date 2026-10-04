@@ -6,6 +6,10 @@ const cleanReceiptValue = (value, maxLength) => {
   return cleaned || null;
 };
 
+const isReceiptDateToday = (receiptDate, todayManila) => /^\d{4}-\d{2}-\d{2}$/.test(String(receiptDate || ''))
+  && /^\d{4}-\d{2}-\d{2}$/.test(String(todayManila || ''))
+  && receiptDate === todayManila;
+
 function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expectedAccountNumber, submittedPaymentNumber, submittedReference, latestAllowedDate }) {
   const confidence = Number(ocr.confidence) || 0;
   const confident = confidence >= MIN_CONFIDENT_MISMATCH;
@@ -20,8 +24,10 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
   const validDate = /^\d{4}-\d{2}-\d{2}$/.test(String(ocr.date || '')) ? ocr.date : null;
   let declineReason = null;
 
-  if (validDate && latestAllowedDate && validDate < latestAllowedDate) {
-    declineReason = `Receipt is outdated. The uploaded receipt date is ${validDate}, but the latest allowed receipt date is ${latestAllowedDate}.`;
+  if (validDate && latestAllowedDate && !isReceiptDateToday(validDate, latestAllowedDate)) {
+    declineReason = validDate < latestAllowedDate
+      ? `Receipt is outdated. Only receipts dated today are accepted. Receipt date: ${validDate}. Required date: ${latestAllowedDate}.`
+      : `Receipt date is invalid. Only receipts dated today are accepted. Receipt date: ${validDate}. Required date: ${latestAllowedDate}.`;
   } else if (confident && validDate && Number.isFinite(Number(ocr.amount)) && Number(ocr.amount) > 0
       && Math.abs(Number(ocr.amount) - Number(requiredAmount)) > 0.01) {
     declineReason = 'Payment amount does not match required amount.';
@@ -53,4 +59,4 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
   };
 }
 
-module.exports = { cleanReceiptValue, validateReceiptSignals };
+module.exports = { cleanReceiptValue, isReceiptDateToday, validateReceiptSignals };
