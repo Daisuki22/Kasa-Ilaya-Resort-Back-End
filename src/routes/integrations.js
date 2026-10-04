@@ -12,6 +12,8 @@ const config = require('../config/env');
 const { createPaymentProofUploadToken } = require('../services/paymentProofUpload');
 const { createEmptyReceiptOcr, recognizeReceipt, MIN_CONFIDENT_VERIFICATION } = require('../services/receiptOcr');
 const { MAX_PAYMENT_RECEIPT_BYTES, isValidPaymentReceiptImage } = require('../services/paymentReceiptFile');
+const { validateReceiptSignals } = require('../services/receiptValidation');
+const { getTodayManilaDate } = require('../services/bookingSchedule');
 
 const router = express.Router();
 const upload = multer({ dest: temporaryUploadsDir, limits: { fileSize: MAX_PAYMENT_RECEIPT_BYTES } });
@@ -105,6 +107,31 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
           status: ocr.status,
           duplicate_image: duplicateFiles.length > 0,
         };
+        let validation = 'pending_review';
+        let message = 'Receipt content was scanned for review signals. An authorized admin still needs to verify the original proof.';
+        const selectedQrCodeId = String(req.body.payment_qr_code_id || '').trim();
+        if (selectedQrCodeId) {
+          const [methods] = await pool.query(
+            'SELECT label,account_number FROM payment_qr_codes WHERE id=? AND is_active=1 LIMIT 1',
+            [selectedQrCodeId]
+          );
+          if (!methods[0]) {
+            try { fs.unlinkSync(target); } catch {}
+            return res.status(422).json({ error: 'The selected payment method is unavailable. Refresh the page and upload the receipt again.' });
+          }
+          const signals = validateReceiptSignals({
+            ocr,
+            selectedMethod: methods[0].label,
+            expectedAccountNumber: methods[0].account_number,
+            submittedPaymentNumber: req.body.payment_number,
+            submittedReference: req.body.payment_reference_number,
+            latestAllowedDate: getTodayManilaDate(),
+          });
+          if (signals.declineReason) {
+            validation = 'declined';
+            message = signals.declineReason;
+          }
+        }
         return res.json({
           file_url: fileUrl,
           purpose,
@@ -114,9 +141,9 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
             secret: config.jwtSecret,
             ocr: ocrSummary,
           }),
-          validation: 'pending_review',
+          validation,
           ocr_summary: ocrSummary,
-          message: 'Receipt content was scanned for review signals. An authorized admin still needs to verify the original proof.',
+          message,
         });
       }
       return res.json({
