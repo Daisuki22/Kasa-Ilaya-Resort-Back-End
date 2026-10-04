@@ -225,7 +225,7 @@ CREATE TABLE `bookings` (
   `rejected_by` varchar(64) DEFAULT NULL,
   `rejected_at` datetime DEFAULT NULL,
   `rejection_reason` text DEFAULT NULL,
-  `payment_status` enum('unpaid','pending_verification','paid') NOT NULL DEFAULT 'unpaid',
+  `payment_status` enum('unpaid','pending_verification','paid','declined') NOT NULL DEFAULT 'unpaid',
   `additional_fee_amount` decimal(10,2) NOT NULL DEFAULT 0.00,
   `additional_fee_reason` text DEFAULT NULL,
   `additional_fee_status` enum('pending','unpaid','paid') NOT NULL DEFAULT 'unpaid',

@@ -28,7 +28,7 @@ const MAP={
  Review:{table:'reviews',fields:['id','created_date','updated_date','booking_id','booking_reference','guest_name','guest_email','package_name','rating','review_text','is_approved'],bool:['is_approved'],numeric:['rating']},
  Notification:{table:'notifications',fields:['id','created_date','user_email','event_key','title','description','link','entity_type','entity_id','is_read'],bool:['is_read']}
 };
-function deserialize(cfg,row){const out={...row};if(cfg.table==='bookings')delete out.payment_proof_fingerprint;for(const f of cfg.json||[]){if(out[f]!==null&&out[f]!==undefined){try{out[f]=typeof out[f]==='string'?JSON.parse(out[f]):out[f];}catch{out[f]=[];}}}for(const f of cfg.bool||[])if(f in out)out[f]=!!out[f];for(const f of cfg.numeric||[])if(out[f]!==null&&out[f]!==undefined){const n=Number(out[f]);out[f]=Number.isInteger(n)?n:n;}for(const f of ['created_date','updated_date'])if(out[f] instanceof Date)out[f]=out[f].toISOString();return out;}
+function deserialize(cfg,row){const out={...row};if(cfg.table==='bookings')delete out.payment_proof_fingerprint;for(const f of cfg.json||[]){if(out[f]!==null&&out[f]!==undefined){try{out[f]=typeof out[f]==='string'?JSON.parse(out[f]):out[f];}catch{out[f]=[];}}}for(const f of cfg.bool||[])if(f in out)out[f]=!!out[f];for(const f of cfg.numeric||[])if(out[f]!==null&&out[f]!==undefined){const n=Number(out[f]);out[f]=Number.isInteger(n)?n:n;}for(const f of ['created_date','updated_date'])if(out[f] instanceof Date)out[f]=out[f].toISOString();if(out.payment_proof_ocr_date instanceof Date)out.payment_proof_ocr_date=out.payment_proof_ocr_date.toISOString().slice(0,10);return out;}
 function serialize(cfg,f,v){if((cfg.json||[]).includes(f))return v==null?null:JSON.stringify(v);if((cfg.bool||[]).includes(f))return v?1:0;return v;}
 async function getScheduleRows(db,fromDate,toDate,forUpdate=false){const statusSlots=ACTIVE_BOOKING_STATUSES.map(()=>'?').join(',');const lock=forUpdate?' FOR UPDATE':'';const [bookings]=await db.query(`SELECT id,DATE_FORMAT(booking_date,'%Y-%m-%d') AS booking_date,tour_type,status FROM bookings WHERE status IN (${statusSlots}) AND booking_date BETWEEN ? AND ?${lock}`,[...ACTIVE_BOOKING_STATUSES,fromDate,toDate]);const [schedules]=await db.query(`SELECT DATE_FORMAT(schedule_date,'%Y-%m-%d') AS schedule_date FROM upcoming_schedules WHERE schedule_date BETWEEN ? AND ?${lock}`,[fromDate,toDate]);return {bookings,manualDates:schedules.map(row=>row.schedule_date)};}
 async function databaseScheduleIsAvailable(db,bookingDate,tourType,excludeBookingId=null,forUpdate=false){const fromDate=addDateKeyDays(bookingDate,-1);const toDate=addDateKeyDays(bookingDate,tourType==='22_hours'?1:0);const {bookings,manualDates}=await getScheduleRows(db,fromDate,toDate,forUpdate);return isScheduleAvailable({bookingDate,tourType,bookings,manualDates,excludeBookingId});}
@@ -376,15 +376,44 @@ async function acceptBooking(req,res){
   connection=await pool.getConnection();
   await connection.beginTransaction();
   transactionStarted=true;
-  const [rows]=await connection.query('SELECT * FROM bookings WHERE id=? FOR UPDATE',[bookingId]);
-  const booking=rows[0];
-  if(!booking)throw httpError('Reservation not found.',404);
-  if(booking.status!=='pending')throw httpError('Only pending bookings can be accepted.',409);
-  if(booking.payment_status!=='pending_verification'||!String(booking.receipt_url||'').trim()||!uploadedReceiptPath(booking.receipt_url)||!String(booking.payment_mode||booking.payment_qr_code_label||'').trim()||!String(booking.payment_number||'').trim()||!String(booking.payment_reference_number||'').trim()||!Number.isFinite(Number(booking.payment_amount_due))||Number(booking.payment_amount_due)<=0){
-   throw httpError('A payment method, payment number, amount, reference number, and payment proof are required before accepting this booking.',422);
-  }
-  const [qrRows]=await connection.query('SELECT id FROM payment_qr_codes WHERE id=? LIMIT 1',[booking.payment_qr_code_id]);
-  if(!qrRows[0])throw httpError('The selected payment method is no longer available. Review the booking payment details.',409);
+   const [rows]=await connection.query("SELECT *,DATE_FORMAT(payment_proof_ocr_date,'%Y-%m-%d') AS receipt_date_key FROM bookings WHERE id=? FOR UPDATE",[bookingId]);
+   const booking=rows[0];
+   if(!booking)throw httpError('Reservation not found.',404);
+   if(booking.status!=='pending')throw httpError('Only pending bookings can be accepted.',409);
+   const receiptPath=uploadedReceiptPath(booking.receipt_url);
+   if(!receiptPath)throw httpError('A valid payment receipt is required before accepting this booking.',422);
+   const receiptDate=String(booking.receipt_date_key||'').slice(0,10);
+   if(!/^\d{4}-\d{2}-\d{2}$/.test(receiptDate)){
+    throw httpError('The receipt date could not be verified. Keep this booking pending for manual review.',422);
+   }
+   const latestAllowedDate=dateKeyFromDate(new Date());
+   const outdatedReason=`Receipt is outdated. The uploaded receipt date is ${receiptDate}, but the latest allowed receipt date is ${latestAllowedDate}.`;
+   const declineAndReturn=async(reason)=>{
+    await connection.query("UPDATE bookings SET status='rejected',payment_status='declined',payment_proof_review='auto_declined',rejected_at=COALESCE(rejected_at,NOW()),rejection_reason=?,updated_date=NOW() WHERE id=? AND status='pending'",[reason,booking.id]);
+    const [declinedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);
+    await connection.commit();
+    transactionStarted=false;
+    return res.status(400).json({success:false,status:'DECLINED',reason,data:declinedRows[0]?deserialize(MAP.Booking,declinedRows[0]):undefined});
+   };
+   if(receiptDate<latestAllowedDate)return await declineAndReturn(outdatedReason);
+   if(booking.payment_status!=='pending_verification'||!String(booking.payment_mode||booking.payment_qr_code_label||'').trim()||!Number.isFinite(Number(booking.payment_amount_due))||Number(booking.payment_amount_due)<=0){
+    return await declineAndReturn('Unable to verify receipt information.');
+   }
+   const [qrRows]=await connection.query('SELECT id,label FROM payment_qr_codes WHERE id=? LIMIT 1',[booking.payment_qr_code_id]);
+   if(!qrRows[0])return await declineAndReturn('Payment method does not match selected payment method.');
+   const receiptAmount=Number(booking.payment_proof_ocr_amount);
+   if(!Number.isFinite(receiptAmount)||Math.abs(receiptAmount-Number(booking.payment_amount_due))>0.01){
+    return await declineAndReturn('Payment amount does not match required amount.');
+   }
+   const detectedProvider=classifyPaymentProvider(booking.payment_proof_ocr_provider);
+   const selectedProvider=classifyPaymentProvider(qrRows[0].label);
+   if(detectedProvider&&selectedProvider&&detectedProvider!==selectedProvider){
+    return await declineAndReturn('Payment method does not match selected payment method.');
+   }
+   try{validateRequiredBookingPayment(booking);}catch{return await declineAndReturn('Invalid payment/reference information.');}
+   if(booking.payment_proof_ocr_reference&&String(booking.payment_reference_number||'').trim().toLowerCase()!==String(booking.payment_proof_ocr_reference).trim().toLowerCase()){
+    return await declineAndReturn('Invalid payment/reference information.');
+   }
   await connection.query("UPDATE bookings SET status='confirmed',approved_by=?,approved_at=NOW(),payment_status='paid',updated_date=NOW() WHERE id=? AND status='pending'",[String(req.user.id||'').slice(0,64),booking.id]);
   await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Administrator','Booking accepted and payment verified','Booking',booking.id,`Accepted ${booking.booking_reference} and verified the submitted ${booking.payment_mode||booking.payment_qr_code_label} proof for ${Number(booking.payment_amount_due).toFixed(2)}.`]);
   const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);
@@ -557,11 +586,16 @@ async function createBooking(req,res,next){
   return next(error);
  }finally{if(connection)connection.release();}
 }
+async function declineOutdatedPendingReceipts(db=pool){
+ const latestAllowedDate=dateKeyFromDate(new Date());
+ await db.query("UPDATE bookings SET status='rejected',payment_status='declined',payment_proof_review='auto_declined',rejected_at=COALESCE(rejected_at,NOW()),rejection_reason=CONCAT('Receipt is outdated. The uploaded receipt date is ',DATE_FORMAT(payment_proof_ocr_date,'%Y-%m-%d'),', but the latest allowed receipt date is ',? ,'.'),updated_date=NOW() WHERE status='pending' AND payment_status='pending_verification' AND payment_proof_ocr_date IS NOT NULL AND payment_proof_ocr_date<?",[latestAllowedDate,latestAllowedDate]);
+}
 async function adminBookingPage(req,res,next){
  if(!req.user)return res.status(401).json({error:'Not authenticated.'});
  if(!isAdmin(req.user))return res.status(403).json({error:'Forbidden.'});
- try{
-  await expirePastPendingBookings();
+  try{
+   await expirePastPendingBookings();
+   await declineOutdatedPendingReceipts();
   const pageText=String(req.query.page||'1');
   const limitText=String(req.query.limit||'10');
   const requestedPage=Number(pageText);
@@ -690,9 +724,7 @@ async function validateBookingSubmission(record,db=pool,proofToken=null,userId=n
  const claims=getPaymentProofUploadClaims(proofToken,{userId,fileUrl:record.receipt_url,secret:process.env.JWT_SECRET});
  if(!claims)throw httpError('Upload a new payment proof using your signed-in account before submitting this booking.',403);
   const ocr=claims.ocr||createEmptyReceiptOcr();
-  const createdDate=record.created_date instanceof Date
-   ? dateKeyFromDate(record.created_date)
-   : dateKeyFromDate(new Date(`${String(record.created_date||'').replace(' ','T')}Z`));
+  const latestAllowedDate=dateKeyFromDate(new Date());
   const signals=validateReceiptSignals({
    ocr,
    requiredAmount:record.payment_amount_due,
@@ -700,7 +732,7 @@ async function validateBookingSubmission(record,db=pool,proofToken=null,userId=n
    expectedAccountNumber:methods[0].account_number,
    submittedPaymentNumber:record.payment_number,
    submittedReference:record.payment_reference_number,
-   createdDate,
+   latestAllowedDate,
   });
   if(signals.paymentNumber)record.payment_number=signals.paymentNumber;
   if(signals.paymentReference)record.payment_reference_number=signals.paymentReference;
@@ -714,13 +746,13 @@ async function validateBookingSubmission(record,db=pool,proofToken=null,userId=n
    &&Boolean(signals.detectedProvider&&selectedProvider===signals.detectedProvider)
    &&signals.amount!==null&&Math.abs(signals.amount-Number(record.payment_amount_due))<=0.01
    &&Boolean(signals.extractedPaymentNumber)&&Boolean(signals.extractedReference)&&Boolean(signals.date)
-   &&signals.date>=createdDate&&ocr.status==='successful';
+   &&signals.date===latestAllowedDate&&ocr.status==='successful';
   record.payment_proof_ocr_provider=signals.detectedProvider;
   record.payment_proof_ocr_amount=signals.amount;
   record.payment_proof_ocr_reference=signals.extractedReference;
   record.payment_proof_ocr_date=signals.date;
   record.payment_proof_ocr_confidence=signals.confidence;
-  record.payment_status='pending_verification';
+  record.payment_status=signals.declineReason||duplicateReference?'declined':'pending_verification';
   if(signals.declineReason||duplicateReference){
    record.status='rejected';
    record.rejected_at=now();
@@ -750,7 +782,7 @@ async function validateBookingLegalAcceptance(record,payload,db){
 }
 async function enforceBookingNotice(req,res,next){try{const entity=String(req.query.entity||'');const body=req.body||{};const rebooking=body.rebooking_status==='requested';if(!['PATCH','PUT'].includes(req.method)||entity!=='Booking'||!rebooking||isAdmin(req.user))return next();if(!req.user)return res.status(401).json({error:'Not authenticated.'});const rid=String(req.query.id||'');if(!rid)return next();const [rows]=await pool.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[rid]);const booking=rows[0];if(!booking||String(booking.customer_email).toLowerCase()!==String(req.user.email||'').toLowerCase())return next();if(!['pending','confirmed'].includes(booking.status)||(booking.rebooking_status||'none')==='pending'||Number(booking.rebooking_count||0)>=1)return res.status(409).json({error:'This booking is not eligible for another rebooking request.'});return next();}catch(error){return next(error);}}
 async function handler(req,res,next){try{const entity=String(req.query.entity||'');const cfg=MAP[entity];if(!cfg)return res.status(404).json({error:`Unsupported entity: ${entity}`});const table=cfg.table;const fields=cfg.fields;const method=req.method;const admin=isAdmin(req.user);if(entity==='LostItemReport'&&!admin)return res.status(403).json({error:'Forbidden.'});if(['ActivityLog','User'].includes(entity)&&!admin&&(method!=='GET'||!req.user))return res.status(403).json({error:'Forbidden.'});if(entity==='User'&&req.user?.role!=='super_admin'&&req.user?.app_role!=='super_admin')return res.status(403).json({error:'Forbidden.'});if(!admin&&['Booking','PaymentQrCode','SiteSetting'].includes(entity)&&method!=='GET')return res.status(403).json({error:'Forbidden.'});if(!admin&&entity==='Review'&&method!=='GET'&&method!=='POST')return res.status(403).json({error:'Forbidden.'});if(!admin&&['Package','ResortRule','UpcomingSchedule','FoundItem'].includes(entity)&&!['GET','POST'].includes(method))return res.status(403).json({error:'Forbidden.'});
-if(method==='GET'){if(entity==='Booking')await expirePastPendingBookings();const where=[],vals=[];if(entity==='Notification'){if(!req.user)return res.status(401).json({error:'Not authenticated.'});where.push('LOWER(user_email)=LOWER(?)');vals.push(req.user.email);}let filter={};try{filter=req.query.filter?JSON.parse(req.query.filter):{};}catch{}for(const [f,v] of Object.entries(filter)){if(!fields.includes(f))continue;if(Array.isArray(v)&&v.length){where.push(`\`${f}\` IN (${v.map(()=>'?').join(',')})`);vals.push(...v.map(x=>serialize(cfg,f,x)));}else{where.push(`\`${f}\`=?`);vals.push(serialize(cfg,f,v));}}if(!admin&&['Package','PaymentQrCode','ResortRule','FoundItem'].includes(entity)){where.push('is_active=1');}if(!admin&&entity==='Review'){where.push('is_approved=1');}if(entity==='ActivityLog'&&!admin){if(!req.user)return res.status(403).json({error:'Forbidden.'});where.push('user_email=?');vals.push(req.user.email);}if(entity==='Booking'&&!admin&&req.user){where.push('LOWER(customer_email)=LOWER(?)');vals.push(req.user.email);}if(entity==='Booking'&&!req.user&&!filter.customer_email){where.push("status IN ('pending','confirmed','completed')");}let sql=`SELECT * FROM \`${table}\``;if(where.length)sql+=' WHERE '+where.join(' AND ');const sort=String(req.query.sort||'');if(sort){const desc=sort.startsWith('-'),sf=desc?sort.slice(1):sort;if(fields.includes(sf))sql+=` ORDER BY \`${sf}\` ${desc?'DESC':'ASC'}`;}if(/^\d+$/.test(String(req.query.limit||'')))sql+=` LIMIT ${Math.min(500,Number(req.query.limit))} OFFSET ${Math.max(0,/^\d+$/.test(String(req.query.offset||''))?Number(req.query.offset):0)}`;const [rows]=await pool.query(sql,vals);return res.json(rows.map(r=>{const item=deserialize(cfg,r);if(entity==='Booking'&&!admin&&(!req.user||String(item.customer_email||'').toLowerCase()!==String(req.user.email||'').toLowerCase()))return {id:item.id,package_id:item.package_id,package_name:item.package_name,tour_type:item.tour_type,booking_date:item.booking_date,guest_count:item.guest_count,status:item.status};return item;}));}
+if(method==='GET'){if(entity==='Booking'){await expirePastPendingBookings();await declineOutdatedPendingReceipts();}const where=[],vals=[];if(entity==='Notification'){if(!req.user)return res.status(401).json({error:'Not authenticated.'});where.push('LOWER(user_email)=LOWER(?)');vals.push(req.user.email);}let filter={};try{filter=req.query.filter?JSON.parse(req.query.filter):{};}catch{}for(const [f,v] of Object.entries(filter)){if(!fields.includes(f))continue;if(Array.isArray(v)&&v.length){where.push(`\`${f}\` IN (${v.map(()=>'?').join(',')})`);vals.push(...v.map(x=>serialize(cfg,f,x)));}else{where.push(`\`${f}\`=?`);vals.push(serialize(cfg,f,v));}}if(!admin&&['Package','PaymentQrCode','ResortRule','FoundItem'].includes(entity)){where.push('is_active=1');}if(!admin&&entity==='Review'){where.push('is_approved=1');}if(entity==='ActivityLog'&&!admin){if(!req.user)return res.status(403).json({error:'Forbidden.'});where.push('user_email=?');vals.push(req.user.email);}if(entity==='Booking'&&!admin&&req.user){where.push('LOWER(customer_email)=LOWER(?)');vals.push(req.user.email);}if(entity==='Booking'&&!req.user&&!filter.customer_email){where.push("status IN ('pending','confirmed','completed')");}let sql=`SELECT * FROM \`${table}\``;if(where.length)sql+=' WHERE '+where.join(' AND ');const sort=String(req.query.sort||'');if(sort){const desc=sort.startsWith('-'),sf=desc?sort.slice(1):sort;if(fields.includes(sf))sql+=` ORDER BY \`${sf}\` ${desc?'DESC':'ASC'}`;}if(/^\d+$/.test(String(req.query.limit||'')))sql+=` LIMIT ${Math.min(500,Number(req.query.limit))} OFFSET ${Math.max(0,/^\d+$/.test(String(req.query.offset||''))?Number(req.query.offset):0)}`;const [rows]=await pool.query(sql,vals);return res.json(rows.map(r=>{const item=deserialize(cfg,r);if(entity==='Booking'&&!admin&&(!req.user||String(item.customer_email||'').toLowerCase()!==String(req.user.email||'').toLowerCase()))return {id:item.id,package_id:item.package_id,package_name:item.package_name,tour_type:item.tour_type,booking_date:item.booking_date,guest_count:item.guest_count,status:item.status};return item;}));}
 if(method==='POST'){if(!admin&&!['ActivityLog','Booking','Review'].includes(entity)&&!(entity==='FoundItem'&&req.user))return res.status(403).json({error:'Forbidden.'});if(!req.user&&['ActivityLog','Booking','Review','FoundItem'].includes(entity))return res.status(401).json({error:'Not authenticated.'});const p=req.body||{},n=now(),record={};for(const f of fields)if(Object.prototype.hasOwnProperty.call(p,f))record[f]=p[f];record.id=record.id||id(entity.toLowerCase());record.created_date=record.created_date||n;record.updated_date=n;if(entity==='ActivityLog'&&!admin){record.user_email=req.user.email;record.user_name=req.user.full_name;}if(entity==='Booking'){record.customer_email=req.user.email;record.booking_reference=record.booking_reference||`KI-${cryptoRandom(4)}`;record.status='pending';record.payment_status=record.receipt_url?'pending_verification':'unpaid';record.payment_proof_review=record.receipt_url?'needs_manual_review':null;record.payment_proof_fingerprint=null;if(record.receipt_url){const proofPath=uploadedReceiptPath(record.receipt_url);if(proofPath){record.payment_proof_fingerprint=createHash('sha256').update(fs.readFileSync(proofPath)).digest('hex');const [duplicates]=await pool.query('SELECT id FROM bookings WHERE payment_proof_fingerprint=? LIMIT 1',[record.payment_proof_fingerprint]);if(duplicates.length)record.payment_proof_review='duplicate_needs_review';}}}if(entity==='Review'&&!admin){const [bookings]=await pool.query('SELECT id,booking_reference,package_name,customer_name,customer_email,status FROM bookings WHERE id=? LIMIT 1',[record.booking_id]);const booking=bookings[0];if(!booking||String(booking.customer_email).toLowerCase()!==String(req.user.email).toLowerCase()||booking.status!=='completed')return res.status(403).json({error:'A review can only be submitted for your completed booking.'});Object.assign(record,{booking_reference:booking.booking_reference,package_name:booking.package_name,guest_name:booking.customer_name,guest_email:booking.customer_email});}if(entity==='FoundItem'&&!admin){delete record.is_active;delete record.status;record.found_by=req.user.full_name||req.user.email;record.status='unclaimed';record.is_active=false;}if(entity==='Package'){record.is_active=record.is_active!==false;record.price=Number(record.price||0);record.max_guests=Number(record.max_guests||1);}if(entity==='FoundItem'&&admin)record.status=record.status||'unclaimed';if(entity==='LostItemReport')record.status=record.status||'searching';await validate(entity,record);if(entity==='Booking')await validateBookingSubmission(record);const cols=[],qs=[],vals=[];for(const f of fields)if(Object.prototype.hasOwnProperty.call(record,f)){cols.push(`\`${f}\``);qs.push('?');vals.push(serialize(cfg,f,record[f]));}await pool.query(`INSERT INTO \`${table}\` (${cols.join(',')}) VALUES (${qs.join(',')})`,vals);const [r]=await pool.query(`SELECT * FROM \`${table}\` WHERE id=? LIMIT 1`,[record.id]);return res.status(201).json(deserialize(cfg,r[0]||record));}
 if(['PATCH','PUT'].includes(method)){const rid=String(req.query.id||'');if(!rid)return res.status(422).json({error:'Missing entity id.'});const [existing]=await pool.query(`SELECT * FROM \`${table}\` WHERE id=? LIMIT 1`,[rid]);if(!existing[0])return res.status(404).json({error:'Record not found.'});if(!admin){if(entity!=='Booking'||String(existing[0].customer_email).toLowerCase()!==String(req.user?.email||'').toLowerCase())return res.status(403).json({error:'Forbidden.'});const patch=req.body||{};const allowed=new Set(['status']);if(Object.keys(patch).some(key=>!allowed.has(key))||(patch.status&&patch.status!=='cancelled')||(patch.rebooking_status&&patch.rebooking_status!=='requested'))return res.status(403).json({error:'Forbidden.'});}const record={...existing[0],...(req.body||{}),updated_date:now()};await validate(entity,record,rid);const updates=[],vals=[];for(const f of fields)if(f!=='id'&&Object.prototype.hasOwnProperty.call(req.body||{},f)){updates.push(`\`${f}\`=?`);vals.push(serialize(cfg,f,req.body[f]));}updates.push('updated_date=?');vals.push(record.updated_date,rid);await pool.query(`UPDATE \`${table}\` SET ${updates.join(',')} WHERE id=?`,vals);const [r]=await pool.query(`SELECT * FROM \`${table}\` WHERE id=? LIMIT 1`,[rid]);return res.json(deserialize(cfg,r[0]));}
 if(method==='DELETE'){if(!admin)return res.status(403).json({error:'Forbidden.'});const rid=String(req.query.id||'');if(!rid)return res.status(422).json({error:'Missing entity id.'});await pool.query(`DELETE FROM \`${table}\` WHERE id=?`,[rid]);return res.json({success:true,id:rid});}return res.status(405).json({error:'Method not allowed.'});}catch(e){next(e);}}

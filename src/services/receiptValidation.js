@@ -6,7 +6,7 @@ const cleanReceiptValue = (value, maxLength) => {
   return cleaned || null;
 };
 
-function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expectedAccountNumber, submittedPaymentNumber, submittedReference, createdDate }) {
+function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expectedAccountNumber, submittedPaymentNumber, submittedReference, latestAllowedDate }) {
   const confidence = Number(ocr.confidence) || 0;
   const confident = confidence >= MIN_CONFIDENT_MISMATCH;
   const detectedProvider = classifyPaymentProvider(ocr.provider);
@@ -17,25 +17,26 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
   const recipientDigits = String(ocr.recipient || '').replace(/\D/g, '');
   const paymentNumber = confident && extractedPaymentNumber ? extractedPaymentNumber : cleanReceiptValue(submittedPaymentNumber, 64);
   const paymentReference = confident && extractedReference ? extractedReference : cleanReceiptValue(submittedReference, 128);
+  const validDate = /^\d{4}-\d{2}-\d{2}$/.test(String(ocr.date || '')) ? ocr.date : null;
   let declineReason = null;
 
-  if (confident && Number.isFinite(Number(ocr.amount)) && Number(ocr.amount) > 0
+  if (validDate && latestAllowedDate && validDate < latestAllowedDate) {
+    declineReason = `Receipt is outdated. The uploaded receipt date is ${validDate}, but the latest allowed receipt date is ${latestAllowedDate}.`;
+  } else if (confident && validDate && Number.isFinite(Number(ocr.amount)) && Number(ocr.amount) > 0
       && Math.abs(Number(ocr.amount) - Number(requiredAmount)) > 0.01) {
     declineReason = 'Payment amount does not match required amount.';
-  } else if (confident && detectedProvider && selectedProvider && detectedProvider !== selectedProvider) {
+  } else if (confident && validDate && detectedProvider && selectedProvider && detectedProvider !== selectedProvider) {
     declineReason = 'Payment method does not match selected payment method.';
-  } else if (confident && expectedAccountDigits.length >= 5 && recipientDigits.length === expectedAccountDigits.length
+  } else if (confident && validDate && expectedAccountDigits.length >= 5 && recipientDigits.length === expectedAccountDigits.length
       && recipientDigits !== expectedAccountDigits) {
     declineReason = 'Payment method does not match selected payment method.';
-  } else if (confident && ocr.date && createdDate && ocr.date < createdDate) {
-    declineReason = 'Receipt date is outside the allowed payment date.';
-  } else if (confident && extractedPaymentNumber && submittedPaymentNumber
+  } else if (confident && validDate && extractedPaymentNumber && submittedPaymentNumber
       && extractedPaymentNumber.replace(/\D/g, '') !== String(submittedPaymentNumber).replace(/\D/g, '')) {
     declineReason = 'Invalid payment/reference information.';
-  } else if (confident && extractedReference && submittedReference
+  } else if (confident && validDate && extractedReference && submittedReference
       && extractedReference.toLowerCase() !== String(submittedReference).trim().toLowerCase()) {
     declineReason = 'Invalid payment/reference information.';
-  } else if (confident && ocr.status === 'failed') {
+  } else if (confident && validDate && ocr.status === 'failed') {
     declineReason = 'Unable to verify receipt information.';
   }
 
@@ -47,7 +48,7 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
     extractedReference,
     declineReason,
     amount: Number.isFinite(Number(ocr.amount)) && Number(ocr.amount) > 0 ? Number(Number(ocr.amount).toFixed(2)) : null,
-    date: /^\d{4}-\d{2}-\d{2}$/.test(String(ocr.date || '')) ? ocr.date : null,
+    date: validDate,
     confidence: Math.max(0, Math.min(100, confidence)),
   };
 }
