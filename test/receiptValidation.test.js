@@ -47,6 +47,16 @@ test('a confidently mismatched payment method is declined', () => {
   assert.equal(result.declineReason, 'Payment method does not match selected payment method.');
 });
 
+test('a detected payment provider mismatch is declined even when receipt date OCR is missing', () => {
+  const result = validateReceiptSignals({ ...base, ocr: { ...validReceipt, provider: 'gcash', date: null } });
+  assert.equal(result.declineReason, 'Payment method does not match selected payment method.');
+});
+
+test('an extracted payment amount mismatch is declined even when confidence and date OCR are low', () => {
+  const result = validateReceiptSignals({ ...base, ocr: { ...validReceipt, amount: 15000, date: null, confidence: 55 } });
+  assert.equal(result.declineReason, 'Payment amount does not match required amount.');
+});
+
 test('a confidently detected recipient account mismatch is declined', () => {
   const result = validateReceiptSignals({
     ...base,
@@ -73,7 +83,7 @@ test('unreadable or incomplete receipts remain pending for manual review', () =>
   for (const ocr of [
     { confidence: 20 },
     { ...validReceipt, paymentNumber: null, reference: null },
-    { ...validReceipt, amount: 1000, date: null },
+    { ...validReceipt, amount: null, date: null },
   ]) {
     const result = validateReceiptSignals({ ...base, ocr });
     assert.equal(result.declineReason, null);

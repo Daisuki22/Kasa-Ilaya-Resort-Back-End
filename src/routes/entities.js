@@ -383,9 +383,6 @@ async function acceptBooking(req,res){
    const receiptPath=uploadedReceiptPath(booking.receipt_url);
    if(!receiptPath)throw httpError('A valid payment receipt is required before accepting this booking.',422);
    const receiptDate=String(booking.receipt_date_key||'').slice(0,10);
-   if(!/^\d{4}-\d{2}-\d{2}$/.test(receiptDate)){
-    throw httpError('The receipt date could not be verified. Keep this booking pending for manual review.',422);
-   }
    const latestAllowedDate=getTodayManilaDate();
    const invalidDateReason=receiptDate<latestAllowedDate
     ? `Receipt is outdated. Only receipts dated today are accepted. Receipt date: ${receiptDate}. Required date: ${latestAllowedDate}.`
@@ -397,7 +394,6 @@ async function acceptBooking(req,res){
     transactionStarted=false;
     return res.status(400).json({success:false,status:'Declined',reason,data:declinedRows[0]?deserialize(MAP.Booking,declinedRows[0]):undefined});
    };
-   if(!isReceiptDateToday(receiptDate,latestAllowedDate))return await declineAndReturn(invalidDateReason);
    if(booking.payment_status!=='pending_verification'||!String(booking.payment_mode||booking.payment_qr_code_label||'').trim()||!Number.isFinite(Number(booking.payment_amount_due))||Number(booking.payment_amount_due)<=0){
     return await declineAndReturn('Unable to verify receipt information.');
    }
@@ -412,6 +408,10 @@ async function acceptBooking(req,res){
    if(detectedProvider&&selectedProvider&&detectedProvider!==selectedProvider){
     return await declineAndReturn('Payment method does not match selected payment method.');
    }
+   if(!/^\d{4}-\d{2}-\d{2}$/.test(receiptDate)){
+    throw httpError('The receipt date could not be verified. Keep this booking pending for manual review.',422);
+   }
+   if(!isReceiptDateToday(receiptDate,latestAllowedDate))return await declineAndReturn(invalidDateReason);
    try{validateRequiredBookingPayment(booking);}catch{return await declineAndReturn('Invalid payment/reference information.');}
    if(booking.payment_proof_ocr_reference&&String(booking.payment_reference_number||'').trim().toLowerCase()!==String(booking.payment_proof_ocr_reference).trim().toLowerCase()){
     return await declineAndReturn('Invalid payment/reference information.');

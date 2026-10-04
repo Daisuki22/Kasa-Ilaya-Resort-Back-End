@@ -121,6 +121,7 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
           }
           const signals = validateReceiptSignals({
             ocr,
+            requiredAmount: Number(req.body.payment_amount_due),
             selectedMethod: methods[0].label,
             expectedAccountNumber: methods[0].account_number,
             submittedPaymentNumber: req.body.payment_number,

@@ -10,6 +10,7 @@ const {
 test('OCR parser recognizes Philippine payment providers and currency amounts', () => {
   assert.equal(classifyPaymentProvider('GCash payment confirmation'), 'gcash');
   assert.equal(extractAmount('Amount Sent: PHP 1,050.00'), 1050);
+  assert.equal(extractAmount('You sent ₱15,000.00'), 15000);
   assert.equal(extractAmount('PHP 1,050.00'), 1050);
   assert.equal(extractAmount('1,050.00 PHP'), 1050);
 });

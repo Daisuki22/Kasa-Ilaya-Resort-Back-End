@@ -28,21 +28,22 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
     declineReason = validDate < latestAllowedDate
       ? `Receipt is outdated. Only receipts dated today are accepted. Receipt date: ${validDate}. Required date: ${latestAllowedDate}.`
       : `Receipt date is invalid. Only receipts dated today are accepted. Receipt date: ${validDate}. Required date: ${latestAllowedDate}.`;
-  } else if (confident && validDate && Number.isFinite(Number(ocr.amount)) && Number(ocr.amount) > 0
+  } else if (Number.isFinite(Number(ocr.amount)) && Number(ocr.amount) > 0
+      && Number.isFinite(Number(requiredAmount)) && Number(requiredAmount) > 0
       && Math.abs(Number(ocr.amount) - Number(requiredAmount)) > 0.01) {
     declineReason = 'Payment amount does not match required amount.';
-  } else if (confident && validDate && detectedProvider && selectedProvider && detectedProvider !== selectedProvider) {
+  } else if (detectedProvider && selectedProvider && detectedProvider !== selectedProvider) {
     declineReason = 'Payment method does not match selected payment method.';
-  } else if (confident && validDate && expectedAccountDigits.length >= 5 && recipientDigits.length === expectedAccountDigits.length
+  } else if (confident && expectedAccountDigits.length >= 5 && recipientDigits.length === expectedAccountDigits.length
       && recipientDigits !== expectedAccountDigits) {
     declineReason = 'Payment method does not match selected payment method.';
-  } else if (confident && validDate && extractedPaymentNumber && submittedPaymentNumber
+  } else if (confident && extractedPaymentNumber && submittedPaymentNumber
       && extractedPaymentNumber.replace(/\D/g, '') !== String(submittedPaymentNumber).replace(/\D/g, '')) {
     declineReason = 'Invalid payment/reference information.';
-  } else if (confident && validDate && extractedReference && submittedReference
+  } else if (confident && extractedReference && submittedReference
       && extractedReference.toLowerCase() !== String(submittedReference).trim().toLowerCase()) {
     declineReason = 'Invalid payment/reference information.';
-  } else if (confident && validDate && ocr.status === 'failed') {
+  } else if (confident && ocr.status === 'failed') {
     declineReason = 'Unable to verify receipt information.';
   }
 

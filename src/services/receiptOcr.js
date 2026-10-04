@@ -41,10 +41,10 @@ const parseAmount = (value) => {
 
 const extractAmount = (text) => {
   const source = String(text || '');
-  const labeled = source.match(/(?:amount(?:\s+(?:sent|paid|received))?|total(?:\s+amount)?|sent|paid|received)\s*[:=\-]?\s*(?:(?:php|₱|p)\s*)?([\d,]+(?:\.\d{1,2})?)/i);
+  const labeled = source.match(/(?:amount(?:\s+(?:sent|paid|received))?|total(?:\s+amount)?|sent|paid|received)\s*[:=\-]?\s*(?:(?:php|p|[\p{Sc}])\s*)?([\d,]+(?:\.\d{1,2})?)/iu);
   if (labeled) return parseAmount(labeled[1]);
 
-  const currencyPrefix = source.match(/(?:₱|\bPHP\b)\s*([\d,]+(?:\.\d{1,2})?)/i);
+  const currencyPrefix = source.match(/(?:[\p{Sc}]|\bPHP\b)\s*([\d,]+(?:\.\d{1,2})?)/iu);
   if (currencyPrefix) return parseAmount(currencyPrefix[1]);
 
   const currencySuffix = source.match(/([\d,]+(?:\.\d{1,2})?)\s*\bPHP\b/i);
