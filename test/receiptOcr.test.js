@@ -29,3 +29,11 @@ test('OCR parser extracts date, reference, status and clamps confidence', () => 
   assert.equal(extractDate('09/29/2026'), '2026-09-29');
   assert.equal(extractDate('2026-02-30'), null);
 });
+
+test('OCR parser extracts a labeled payment account number', () => {
+  const result = extractReceiptFields({
+    text: 'GCash\nAccount Number: 0917 123 4567\nAmount Sent: PHP 1,500.00\nReference No: ABCD123456',
+    confidence: 94,
+  });
+  assert.equal(result.paymentNumber, '0917 123 4567');
+});

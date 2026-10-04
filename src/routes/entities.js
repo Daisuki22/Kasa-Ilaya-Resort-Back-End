@@ -1,7 +1,7 @@
 const express=require('express'); const router=express.Router(); const {pool}=require('../config/database'); const {id,now,publicUser,isAdmin}=require('../utils'); const {auth}=require('../middleware/auth');
 const {randomUUID,createHash}=require('node:crypto');
 const {getPaymentProofUploadClaims}=require('../services/paymentProofUpload');
-const {classifyPaymentProvider,createEmptyReceiptOcr,MIN_CONFIDENT_MISMATCH,MIN_CONFIDENT_VERIFICATION}=require('../services/receiptOcr');
+const {classifyPaymentProvider,createEmptyReceiptOcr,MIN_CONFIDENT_VERIFICATION}=require('../services/receiptOcr');
 const fs=require('node:fs');
 const path=require('node:path');
 const {uploadsDir,bundledUploadsDir}=require('../config/uploads');
@@ -9,6 +9,7 @@ const {createNotification,notifySafely,notifyBookingAdmins}=require('../services
 const {quoteBooking}=require('../services/bookingPricing');
 const {findExistingBookingSubmission}=require('../services/bookingSubmission');
 const {validateRequiredBookingPayment}=require('../services/bookingPaymentValidation');
+const {validateReceiptSignals}=require('../services/receiptValidation');
 const {expirePastPendingBookings}=require('../services/bookingExpiration');
 const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,calendarDaysUntil,dateKeyFromDate,getBookingEndDateTime,getBookingStartDateTime,getTourTime,isBookingCancellationAllowed,isScheduleAvailable,isValidDateKey}=require('../services/bookingSchedule');
 const BOOKING_SCHEDULE_LOCK='kasa_ilaya_booking_schedule';
@@ -530,9 +531,7 @@ async function createBooking(req,res,next){
   stage='validate_payment_proof';
   await validateBookingSubmission(record,connection,payload.payment_proof_token,req.user.id);
   stage='check_payment_reference_number';
-  const [referenceMatches]=await connection.query('SELECT id FROM bookings WHERE LOWER(payment_reference_number)=LOWER(?) LIMIT 1',[record.payment_reference_number]);
-  if(referenceMatches.length)throw httpError('This payment reference number has already been submitted. Check the number or contact the resort.',409,'PAYMENT_REFERENCE_ALREADY_USED');
-  stage='validate_legal_acceptance';
+   stage='validate_legal_acceptance';
   await validateBookingLegalAcceptance(record,payload,connection);
   const cols=[];
   const placeholders=[];
@@ -681,51 +680,57 @@ async function applyBookingPricing(record,db=pool){
 async function validateBookingSubmission(record,db=pool,proofToken=null,userId=null){
  if(!String(record.customer_name||'').trim()||!String(record.customer_email||'').trim()||!String(record.customer_phone||'').trim())throw httpError('Your name, email, and phone number are required to submit a booking.',422);
  record.customer_name=String(record.customer_name).trim();
- Object.assign(record,validateRequiredBookingPayment(record));
+  Object.assign(record,validateRequiredBookingPayment(record,{allowMissingDetails:true}));
  if(!String(record.payment_mode||'').trim()||!record.payment_qr_code_id)throw httpError('Choose a payment method before submitting your booking.',422);
-  const [methods]=await db.query('SELECT id,label FROM payment_qr_codes WHERE id=? AND is_active=1 LIMIT 1',[record.payment_qr_code_id]);
+  const [methods]=await db.query('SELECT id,label,account_number FROM payment_qr_codes WHERE id=? AND is_active=1 LIMIT 1',[record.payment_qr_code_id]);
  if(!methods[0])throw httpError('The selected payment method is unavailable. Refresh the page and choose another method.',422);
   record.payment_qr_code_label=methods[0].label;
   record.payment_mode=methods[0].label;
  if(!String(record.receipt_url||'').trim()||!uploadedReceiptPath(record.receipt_url))throw httpError('Upload a valid payment proof image before submitting your booking.',422);
  const claims=getPaymentProofUploadClaims(proofToken,{userId,fileUrl:record.receipt_url,secret:process.env.JWT_SECRET});
  if(!claims)throw httpError('Upload a new payment proof using your signed-in account before submitting this booking.',403);
- const ocr=claims.ocr||createEmptyReceiptOcr();
- const ocrConfident=Number(ocr.confidence)>=MIN_CONFIDENT_MISMATCH;
- const detectedProvider=classifyPaymentProvider(ocr.provider);
- const selectedProvider=classifyPaymentProvider(methods[0].label);
- if(ocrConfident&&detectedProvider&&selectedProvider&&detectedProvider!==selectedProvider)throw httpError('Uploaded receipt does not match the selected payment method.',422);
- const ocrAmount=Number(ocr.amount);
- const amountValid=Number.isFinite(ocrAmount)&&ocrAmount>0;
- if(ocrConfident&&amountValid&&Math.abs(ocrAmount-Number(record.payment_amount_due))>0.01)throw httpError('The amount detected on the receipt does not match the required payment amount.',422);
- if(ocrConfident&&ocr.status==='failed')throw httpError('The uploaded receipt appears to show a failed payment.',422);
- const reference=typeof ocr.reference==='string'?ocr.reference.trim().slice(0,128):'';
- let duplicateReference=false;
- if(reference){
-  const [duplicates]=await db.query('SELECT id FROM bookings WHERE LOWER(payment_proof_ocr_reference)=LOWER(?) LIMIT 1',[reference]);
-  duplicateReference=duplicates.some((booking)=>booking.id!==record.id);
- }
- const receiptDate=typeof ocr.date==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(ocr.date)?ocr.date:null;
- let dateNeedsReview=false;
- if(receiptDate){
-  const today=dateKeyFromDate(new Date());
-  const daysOld=Math.floor((Date.parse(`${today}T00:00:00Z`)-Date.parse(`${receiptDate}T00:00:00Z`))/86400000);
-  dateNeedsReview=daysOld>30||daysOld< -1;
- }
- const referenceRequired=['gcash','maya','paypal','bdo','bpi','unionbank','seabank','gotyme','metrobank'].includes(detectedProvider);
- const allSignalsMatch=Number(ocr.confidence)>=MIN_CONFIDENT_VERIFICATION
-  &&Boolean(detectedProvider&&selectedProvider===detectedProvider)
-  &&amountValid&&Math.abs(ocrAmount-Number(record.payment_amount_due))<=0.01
-  &&(!referenceRequired||Boolean(reference))&&Boolean(receiptDate)
-  &&!dateNeedsReview&&ocr.status==='successful';
- record.payment_proof_ocr_provider=detectedProvider;
- record.payment_proof_ocr_amount=amountValid?Number(ocrAmount.toFixed(2)):null;
- record.payment_proof_ocr_reference=reference||null;
- record.payment_proof_ocr_date=receiptDate;
- record.payment_proof_ocr_confidence=Number(ocr.confidence)||0;
- if(duplicateReference||record.payment_proof_review==='duplicate_needs_review')record.payment_proof_review='duplicate_needs_review';
- else record.payment_proof_review=allSignalsMatch?'verified':'needs_manual_review';
- record.payment_status='pending_verification';
+  const ocr=claims.ocr||createEmptyReceiptOcr();
+  const createdDate=record.created_date instanceof Date
+   ? dateKeyFromDate(record.created_date)
+   : dateKeyFromDate(new Date(`${String(record.created_date||'').replace(' ','T')}Z`));
+  const signals=validateReceiptSignals({
+   ocr,
+   requiredAmount:record.payment_amount_due,
+   selectedMethod:methods[0].label,
+   expectedAccountNumber:methods[0].account_number,
+   submittedPaymentNumber:record.payment_number,
+   submittedReference:record.payment_reference_number,
+   createdDate,
+  });
+  if(signals.paymentNumber)record.payment_number=signals.paymentNumber;
+  if(signals.paymentReference)record.payment_reference_number=signals.paymentReference;
+  let duplicateReference=false;
+  if(signals.paymentReference){
+   const [duplicates]=await db.query('SELECT id FROM bookings WHERE LOWER(payment_reference_number)=LOWER(?) OR LOWER(payment_proof_ocr_reference)=LOWER(?) LIMIT 1',[signals.paymentReference,signals.paymentReference]);
+   duplicateReference=duplicates.some((booking)=>booking.id!==record.id);
+  }
+  const selectedProvider=classifyPaymentProvider(methods[0].label);
+  const successfulSignals=Number(ocr.confidence)>=MIN_CONFIDENT_VERIFICATION
+   &&Boolean(signals.detectedProvider&&selectedProvider===signals.detectedProvider)
+   &&signals.amount!==null&&Math.abs(signals.amount-Number(record.payment_amount_due))<=0.01
+   &&Boolean(signals.extractedPaymentNumber)&&Boolean(signals.extractedReference)&&Boolean(signals.date)
+   &&signals.date>=createdDate&&ocr.status==='successful';
+  record.payment_proof_ocr_provider=signals.detectedProvider;
+  record.payment_proof_ocr_amount=signals.amount;
+  record.payment_proof_ocr_reference=signals.extractedReference;
+  record.payment_proof_ocr_date=signals.date;
+  record.payment_proof_ocr_confidence=signals.confidence;
+  record.payment_status='pending_verification';
+  if(signals.declineReason||duplicateReference){
+   record.status='rejected';
+   record.rejected_at=now();
+   record.rejection_reason=signals.declineReason||'Invalid payment/reference information.';
+   record.payment_proof_review='auto_declined';
+  }else if(record.payment_proof_review==='duplicate_needs_review'){
+   record.payment_proof_review='duplicate_needs_review';
+  }else{
+   record.payment_proof_review=successfulSignals?'verified':'needs_manual_review';
+  }
 }
 async function validateBookingLegalAcceptance(record,payload,db){
  if(payload?.terms_accepted!==true||payload?.privacy_acknowledged!==true||payload?.privacy_consent!==true)throw httpError('Accept the Terms & Conditions, acknowledge the Privacy Notice, and give separate processing consent before booking.',422);

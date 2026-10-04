@@ -10,10 +10,11 @@ const { auth } = require('../middleware/auth');
 const { isAdmin } = require('../utils');
 const config = require('../config/env');
 const { createPaymentProofUploadToken } = require('../services/paymentProofUpload');
-const { createEmptyReceiptOcr, recognizeReceipt } = require('../services/receiptOcr');
+const { createEmptyReceiptOcr, recognizeReceipt, MIN_CONFIDENT_VERIFICATION } = require('../services/receiptOcr');
+const { MAX_PAYMENT_RECEIPT_BYTES, isValidPaymentReceiptImage } = require('../services/paymentReceiptFile');
 
 const router = express.Router();
-const upload = multer({ dest: temporaryUploadsDir, limits: { fileSize: 8 * 1024 * 1024 } });
+const upload = multer({ dest: temporaryUploadsDir, limits: { fileSize: MAX_PAYMENT_RECEIPT_BYTES } });
 const parseSingleUpload = (req, res, next) => upload.single('file')(req, res, (error) => {
   if (!error) return next();
   if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
@@ -28,14 +29,6 @@ const imageExtensions = {
   'image/jpeg': '.jpg',
   'image/png': '.png',
   'image/webp': '.webp',
-};
-
-const hasValidImageSignature = (filePath, mimeType) => {
-  const file = fs.readFileSync(filePath);
-  if (mimeType === 'image/jpeg') return file.length >= 3 && file[0] === 0xff && file[1] === 0xd8 && file[2] === 0xff;
-  if (mimeType === 'image/png') return file.length >= 24 && file.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) && file.toString('ascii', 12, 16) === 'IHDR' && file.readUInt32BE(16) > 0 && file.readUInt32BE(20) > 0;
-  if (mimeType === 'image/webp') return file.length >= 16 && file.toString('ascii', 0, 4) === 'RIFF' && file.toString('ascii', 8, 12) === 'WEBP';
-  return false;
 };
 
 const removeTemporaryFile = (file) => {
@@ -72,7 +65,7 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
       }
 
       const extension = imageExtensions[req.file.mimetype];
-      if (!extension || !hasValidImageSignature(req.file.path, req.file.mimetype)) {
+      if (!extension || !isValidPaymentReceiptImage(req.file.mimetype, fs.readFileSync(req.file.path))) {
         removeTemporaryFile(req.file);
         return res.status(422).json({ error: 'The upload is not a valid JPG, PNG, or WebP image. Please choose a supported image file.' });
       }
@@ -103,7 +96,10 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
         const ocrSummary = {
           provider: ocr.provider,
           amount: ocr.amount,
+          payment_number: ocr.paymentNumber,
+          autofill_payment_number: Number(ocr.confidence) >= MIN_CONFIDENT_VERIFICATION && Boolean(ocr.paymentNumber),
           reference: ocr.reference,
+          autofill_reference: Number(ocr.confidence) >= MIN_CONFIDENT_VERIFICATION && Boolean(ocr.reference),
           date: ocr.date,
           confidence: ocr.confidence,
           status: ocr.status,

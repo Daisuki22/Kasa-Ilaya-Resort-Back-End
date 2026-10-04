@@ -8,6 +8,7 @@ let recognitionQueue = Promise.resolve();
 const createEmptyReceiptOcr = () => ({
   provider: null,
   amount: null,
+  paymentNumber: null,
   reference: null,
   date: null,
   confidence: 0,
@@ -78,6 +79,13 @@ const extractReference = (text) => {
   return match ? match[1].toUpperCase() : null;
 };
 
+const extractPaymentNumber = (text) => {
+  const match = String(text || '').match(/\b(?:account|wallet|mobile|phone|payment)\s*(?:no\.?|number|#)\s*[:#=-]?\s*([+()\d][+()\d\s.-]{4,31})/i);
+  if (!match) return null;
+  const value = match[1].trim().replace(/\s+/g, ' ').slice(0, 64);
+  return value.replace(/[\u0000-\u001f\u007f]/g, '') || null;
+};
+
 const extractParty = (text, labelPattern) => {
   const lines = String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const line = lines.find((candidate) => labelPattern.test(candidate));
@@ -94,10 +102,11 @@ const extractReceiptFields = ({ text, confidence }) => {
   return {
     provider: classifyPaymentProvider(content),
     amount: extractAmount(content),
+    paymentNumber: extractPaymentNumber(content),
     reference: extractReference(content),
     date: extractDate(content),
     confidence: Number.isFinite(Number(confidence)) ? Math.max(0, Math.min(100, Number(confidence))) : 0,
-    recipient: extractParty(content, /^(?:recipient|merchant|sent to|paid to)\b\s*/i),
+    recipient: extractParty(content, /^(?:recipient|merchant|sent to|paid to|pay to)\b\s*/i),
     sender: extractParty(content, /^(?:sender|from|paid by|sent by)\b\s*/i),
     status: failed ? 'failed' : success ? 'successful' : 'unknown',
   };

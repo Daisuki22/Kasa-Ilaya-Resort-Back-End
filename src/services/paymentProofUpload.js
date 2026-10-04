@@ -22,7 +22,9 @@ function createPaymentProofUploadToken({ userId, fileUrl, secret, ocr, now = Dat
     ocr: ocr ? {
       provider: typeof ocr.provider === 'string' ? ocr.provider.slice(0, 32) : null,
       amount: Number.isFinite(Number(ocr.amount)) ? Number(ocr.amount) : null,
+      paymentNumber: typeof ocr.paymentNumber === 'string' ? ocr.paymentNumber.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 64) : null,
       reference: typeof ocr.reference === 'string' ? ocr.reference.slice(0, 64) : null,
+      recipient: typeof ocr.recipient === 'string' ? ocr.recipient.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 120) : null,
       date: typeof ocr.date === 'string' ? ocr.date.slice(0, 10) : null,
       confidence: Number.isFinite(Number(ocr.confidence)) ? Math.max(0, Math.min(100, Number(ocr.confidence))) : 0,
       status: typeof ocr.status === 'string' ? ocr.status.slice(0, 16) : 'unknown',
