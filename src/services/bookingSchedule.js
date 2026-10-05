@@ -74,12 +74,27 @@ const isScheduleAvailable = ({
   excludeBookingId = null,
 }) => {
   if (!isValidDateKey(bookingDate) || !getTourTime(tourType)) return false;
-  const occupied = getOccupiedDateKeys(bookings, manualDates, excludeBookingId);
-  const requiredDates = tourType === "22_hours"
-    ? [bookingDate, addDateKeyDays(bookingDate, 1)]
-    : [bookingDate];
+  const candidateStart = getBookingStartDateTime(bookingDate, tourType);
+  const candidateEnd = getBookingEndDateTime(bookingDate, tourType);
+  const requiredDates = [bookingDate];
+  if (["night_tour", "22_hours"].includes(tourType)) {
+    requiredDates.push(addDateKeyDays(bookingDate, 1));
+  }
 
-  return requiredDates.every((date) => !occupied.has(date));
+  if (requiredDates.some((date) => manualDates.includes(date))) return false;
+
+  return !bookings.some((booking) => {
+    if (
+      booking.id === excludeBookingId ||
+      (booking.status && !ACTIVE_BOOKING_STATUSES.includes(booking.status))
+    ) return false;
+
+    const existingStart = getBookingStartDateTime(booking.booking_date, booking.tour_type);
+    const existingEnd = getBookingEndDateTime(booking.booking_date, booking.tour_type);
+    if (!existingStart || !existingEnd) return false;
+
+    return candidateStart < existingEnd && existingStart < candidateEnd;
+  });
 };
 
 const getBookingStartDateTime = (bookingDate, tourType) => {

@@ -93,7 +93,7 @@ test("checks both dates for 22-hour stays and honors resort event blocks", () =>
   assert.equal(isScheduleAvailable({ bookingDate: "2026-10-05", tourType: "day_tour", manualDates: ["2026-10-05"] }), false);
 });
 
-test("excludes the booking being moved while still detecting another reservation", () => {
+test("excludes the booking being moved and allows adjacent same-day tour windows", () => {
   const bookings = [
     { id: "moving", booking_date: "2026-10-05", tour_type: "day_tour", status: "confirmed" },
     { id: "other", booking_date: "2026-10-05", tour_type: "night_tour", status: "pending" },
@@ -111,5 +111,5 @@ test("excludes the booking being moved while still detecting another reservation
     tourType: "day_tour",
     bookings,
     excludeBookingId: "moving",
-  }), false);
+  }), true);
 });
