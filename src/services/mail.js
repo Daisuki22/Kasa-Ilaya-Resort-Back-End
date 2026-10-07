@@ -59,6 +59,9 @@ function getTransporter() {
       // Brevo SMTP port 587 uses STARTTLS
       secure: false,
       requireTLS: true,
+      connectionTimeout: 15000,
+      greetingTimeout: 10000,
+      socketTimeout: 30000,
 
       auth: {
         user: config.mail.user,

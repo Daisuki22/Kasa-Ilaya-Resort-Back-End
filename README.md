@@ -22,6 +22,31 @@ database imports.
 
 Optional SMTP: `KASA_MAIL_ENABLED`, `KASA_SMTP_HOST`, `KASA_SMTP_PORT`, `KASA_SMTP_USER`, `KASA_SMTP_PASS`, `KASA_MAIL_FROM_EMAIL`, `KASA_MAIL_FROM_NAME`, `KASA_ADMIN_NOTIFICATION_EMAIL`.
 
+### Brevo SMTP setup
+The mail service is already configured to use Brevo's SMTP relay (`smtp-relay.brevo.com:587` with STARTTLS). Set these values in `backend/.env` for local use and in the Render service environment for production:
+
+```env
+KASA_MAIL_ENABLED=true
+KASA_SMTP_HOST=smtp-relay.brevo.com
+KASA_SMTP_PORT=587
+KASA_SMTP_USER=<Brevo SMTP login>
+KASA_SMTP_PASS=<Brevo SMTP key>
+KASA_MAIL_FROM_EMAIL=<address verified in Brevo>
+KASA_MAIL_FROM_NAME=Kasa Ilaya Resort
+```
+
+In Brevo, use the SMTP login and SMTP key shown under SMTP & API; the SMTP key is not an API key. The sender address must be verified in Brevo. Keep the login and key in environment variables, never in source control.
+
+Brevo also requires the domain-authentication records shown in the Brevo dashboard. The screenshot provided for this setup shows:
+
+| Type | Name | Value |
+| --- | --- | --- |
+| TXT | `@` | `brevo-code:252580074fb03c06d612fb53dc4de8b0` |
+| CNAME | `brevo1._domainkey` | `b1.kasa-ilaya-frontend-vercel-app.dkim.brevo.com` |
+| CNAME | `brevo2._domainkey` | `b2.kasa-ilaya-frontend-vercel-app.dkim.brevo.com` |
+
+Add these records in the DNS control panel for the authenticated domain, then wait for DNS propagation and recheck the domain in Brevo. Some DNS panels append the domain name automatically, so enter only the record name shown above when that is how the panel works. The screenshot reports that the records do not currently match. If the domain in Brevo is a Vercel-provided `*.vercel.app` address, DNS records cannot be added for that shared domain; authenticate a domain you own in Brevo and use the new records it generates instead.
+
 ## Upload storage on Render
 New uploads are written to `KASA_UPLOADS_DIR` when set, otherwise to
 `backend/uploads`. Static serving checks that directory first, then the
