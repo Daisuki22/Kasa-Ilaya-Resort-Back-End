@@ -885,7 +885,11 @@ router.post('/', async (req, res, next) => {
 
       /* Send email */
 
-      const mail = config.sampleRegistrationOtp
+      if (config.otpLogEnabled) {
+        console.warn(`[auth] Temporary registration OTP: ${otp}`);
+      }
+
+      const mail = config.sampleRegistrationOtp || config.otpLogEnabled
         ? { sent: true }
         : await sendMail(
         email,
@@ -922,6 +926,9 @@ router.post('/', async (req, res, next) => {
         mail_error: mail.sent === false
           ? (mail.error || 'Please check SMTP settings.')
           : null,
+        delivery_method: config.sampleRegistrationOtp
+          ? 'development'
+          : config.otpLogEnabled ? 'server_log' : 'email',
         verification_provider: 'server',
         sample_registration_otp: config.sampleRegistrationOtp || undefined
       });
@@ -1020,7 +1027,11 @@ router.post('/', async (req, res, next) => {
 
       /* Send OTP */
 
-      const mail = config.sampleRegistrationOtp
+      if (config.otpLogEnabled) {
+        console.warn(`[auth] Temporary registration OTP: ${otp}`);
+      }
+
+      const mail = config.sampleRegistrationOtp || config.otpLogEnabled
         ? { sent: true }
         : await sendMail(
         email,
@@ -1051,6 +1062,9 @@ router.post('/', async (req, res, next) => {
         mail_error: mail.sent === false
           ? (mail.error || 'Please check SMTP settings.')
           : null,
+        delivery_method: config.sampleRegistrationOtp
+          ? 'development'
+          : config.otpLogEnabled ? 'server_log' : 'email',
         verification_provider: 'server',
         sample_registration_otp: config.sampleRegistrationOtp || undefined
       });
@@ -1549,7 +1563,11 @@ router.post('/', async (req, res, next) => {
           ]
         );
 
-        const mail = config.sampleResetOtp
+        if (config.otpLogEnabled) {
+          console.warn(`[auth] Temporary password reset OTP: ${otp}`);
+        }
+
+        const mail = config.sampleResetOtp || config.otpLogEnabled
           ? { sent: true }
           : await sendMail(
           user.email,
@@ -1579,7 +1597,9 @@ router.post('/', async (req, res, next) => {
         success: true,
         message:
           'If the account exists, a reset code has been sent.',
-        delivery_method: config.sampleResetOtp ? 'development' : 'email',
+        delivery_method: config.sampleResetOtp
+          ? 'development'
+          : config.otpLogEnabled ? 'server_log' : 'email',
         sample_reset_otp: user && config.sampleResetOtp ? config.sampleResetOtp : undefined
       });
     }

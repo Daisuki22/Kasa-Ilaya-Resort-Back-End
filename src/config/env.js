@@ -25,6 +25,7 @@ module.exports = {
       ? process.env.KASA_SAMPLE_RESET_OTP
       : '123456')
     : '',
+  otpLogEnabled: isProduction && /^(1|true|yes)$/i.test(process.env.KASA_OTP_LOG_ENABLED || ''),
   db: {
     host: process.env.KASA_DB_HOST,
     port: Number(process.env.KASA_DB_PORT || 4000),
