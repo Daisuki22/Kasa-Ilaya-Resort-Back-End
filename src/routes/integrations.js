@@ -61,7 +61,7 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
       if (!req.file) return res.status(422).json({ error: 'No file uploaded.' });
 
       const purpose = String(req.body.purpose || '');
-      if (!['payment_receipt', 'profile_image'].includes(purpose) && !isAdmin(req.user)) {
+      if (!['payment_receipt', 'profile_image', 'review_image'].includes(purpose) && !isAdmin(req.user)) {
         removeTemporaryFile(req.file);
         return res.status(403).json({ error: 'Only resort administrators can upload resort images.' });
       }
@@ -74,7 +74,8 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
 
       const month = new Date().toISOString().slice(0, 7).replace('-', '/');
       const directory = path.join(uploadsDir, month);
-      const name = `${purpose === 'profile_image' ? 'profile' : 'upload'}_${randomBytes(16).toString('hex')}${extension}`;
+      const uploadPrefix = purpose === 'profile_image' ? 'profile' : purpose === 'review_image' ? 'review' : 'upload';
+      const name = `${uploadPrefix}_${randomBytes(16).toString('hex')}${extension}`;
       const target = path.join(directory, name);
       fs.mkdirSync(directory, { recursive: true });
       fs.renameSync(req.file.path, target);

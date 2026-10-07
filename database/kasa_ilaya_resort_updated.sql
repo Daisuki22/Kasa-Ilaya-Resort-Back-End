@@ -679,6 +679,7 @@ CREATE TABLE `reviews` (
   `package_name` varchar(191) DEFAULT NULL,
   `rating` int(11) NOT NULL,
   `review_text` text NOT NULL,
+  `image_url` varchar(1024) DEFAULT NULL,
   `is_approved` tinyint(1) NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 

@@ -1,0 +1,2 @@
+ALTER TABLE `reviews`
+  ADD COLUMN IF NOT EXISTS `image_url` varchar(1024) DEFAULT NULL;
