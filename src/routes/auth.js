@@ -492,13 +492,25 @@ router.post('/', async (req, res, next) => {
           p.birth_date || ''
         ).trim();
 
+        if (!birthDate) {
+          return res.status(403).json({
+            error: 'Birthday and phone number are required to finish setting up your Google account.',
+            code: 'google_signup_details_required'
+          });
+        }
+
+        if (!validDateOnly(birthDate)) {
+          return res.status(422).json({
+            error: 'Please enter a valid birthday.'
+          });
+        }
+
         const age = ageFromDate(birthDate);
 
         if (age === null) {
           return res.status(403).json({
-            error:
-              'Please create an account with your birthday before signing in with Google.',
-            code: 'birthday_required'
+            error: 'Birthday and phone number are required to finish setting up your Google account.',
+            code: 'google_signup_details_required'
           });
         }
 
@@ -515,6 +527,19 @@ router.post('/', async (req, res, next) => {
           });
         }
 
+        const phone = String(p.phone || '').trim();
+        if (!phone) {
+          return res.status(403).json({
+            error: 'Birthday and phone number are required to finish setting up your Google account.',
+            code: 'google_signup_details_required'
+          });
+        }
+        if (!phoneOk(phone)) {
+          return res.status(422).json({
+            error: 'Enter a valid Philippine mobile number using 09XXXXXXXXX or 639XXXXXXXXX.'
+          });
+        }
+
         const fullName =
           String(
             googleUser.name ||
@@ -527,16 +552,24 @@ router.post('/', async (req, res, next) => {
               email.split('@')[0]
           ).trim();
 
-        let profileImageUrl = null;
-        try {
-          const picture = new URL(String(googleUser.picture || ''));
-          if (
-            picture.protocol === 'https:' &&
-            picture.hostname.endsWith('.googleusercontent.com')
-          ) {
-            profileImageUrl = picture.toString();
-          }
-        } catch {}
+        let profileImageUrl = String(p.profile_image_url || '').trim() || null;
+        if (profileImageUrl && (
+          profileImageUrl.length > 2048 ||
+          !/^(?:https?:\/\/|\/)/i.test(profileImageUrl)
+        )) {
+          return res.status(422).json({ error: 'The profile image path is invalid.' });
+        }
+        if (!profileImageUrl) {
+          try {
+            const picture = new URL(String(googleUser.picture || ''));
+            if (
+              picture.protocol === 'https:' &&
+              picture.hostname.endsWith('.googleusercontent.com')
+            ) {
+              profileImageUrl = picture.toString();
+            }
+          } catch {}
+        }
 
         const n = now();
 
@@ -568,7 +601,7 @@ router.post('/', async (req, res, next) => {
               email,
               fullName,
               birthDate,
-              p.phone || null,
+              phone.replace(/\D/g, ''),
               profileImageUrl,
               'guest',
               null,
