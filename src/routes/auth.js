@@ -37,6 +37,27 @@ const phoneOk = (phone) =>
     String(phone || '').replace(/\D/g, '')
   );
 
+const validDateOnly = (value) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''));
+  if (!match) return false;
+
+  const [, year, month, day] = match.map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day;
+};
+
+const ageFromDateOnly = (value) => {
+  const [year, month, day] = String(value).split('-').map(Number);
+  const today = new Date();
+  let age = today.getUTCFullYear() - year;
+  const birthdayHasPassed = today.getUTCMonth() + 1 > month
+    || (today.getUTCMonth() + 1 === month && today.getUTCDate() >= day);
+  if (!birthdayHasPassed) age -= 1;
+  return age;
+};
+
 /* =========================================================
    AUTH TOKEN
 ========================================================= */
@@ -1277,6 +1298,15 @@ router.post('/', async (req, res, next) => {
           return res.status(422).json({ error: 'Enter a valid Philippine mobile number.' });
         }
       }
+      if (Object.prototype.hasOwnProperty.call(p, 'birth_date')) {
+        const birthDate = String(p.birth_date || '').trim();
+        if (birthDate && !validDateOnly(birthDate)) {
+          return res.status(422).json({ error: 'Enter a valid birthday.' });
+        }
+        if (birthDate && ageFromDateOnly(birthDate) < 18) {
+          return res.status(422).json({ error: 'You must be at least 18 years old.' });
+        }
+      }
       if (Object.prototype.hasOwnProperty.call(p, 'profile_image_url')) {
         const imageUrl = String(p.profile_image_url || '').trim();
         if (imageUrl.length > 2048 || (imageUrl && !/^(?:https?:\/\/|\/)/i.test(imageUrl))) {
@@ -1289,6 +1319,7 @@ router.post('/', async (req, res, next) => {
           'full_name',
           'email',
           'phone',
+          'birth_date',
           'profile_image_url'
         ]
       ) {
@@ -1302,7 +1333,13 @@ router.post('/', async (req, res, next) => {
 
           fields.push(`${f}=?`);
 
-          vals.push(f === 'email' ? String(p[f]).trim().toLowerCase() : f === 'full_name' ? String(p[f]).trim() : String(p[f] || '').trim() || null);
+          vals.push(f === 'email'
+            ? String(p[f]).trim().toLowerCase()
+            : f === 'full_name'
+              ? String(p[f]).trim()
+              : f === 'birth_date'
+                ? String(p[f] || '').trim() || null
+                : String(p[f] || '').trim() || null);
         }
       }
 

@@ -37,15 +37,16 @@ KASA_MAIL_FROM_NAME=Kasa Ilaya Resort
 
 In Brevo, use the SMTP login and SMTP key shown under SMTP & API; the SMTP key is not an API key. The sender address must be verified in Brevo. Keep the login and key in environment variables, never in source control.
 
-Brevo also requires the domain-authentication records shown in the Brevo dashboard. The screenshot provided for this setup shows:
+Brevo also requires domain-authentication records. The current Brevo setup for `kasailaya.com` shows:
 
 | Type | Name | Value |
 | --- | --- | --- |
 | TXT | `@` | `brevo-code:252580074fb03c06d612fb53dc4de8b0` |
-| CNAME | `brevo1._domainkey` | `b1.kasa-ilaya-frontend-vercel-app.dkim.brevo.com` |
-| CNAME | `brevo2._domainkey` | `b2.kasa-ilaya-frontend-vercel-app.dkim.brevo.com` |
+| CNAME | `brevo1._domainkey` | `b1.kasailaya-com.dkim.brevo.com` |
+| CNAME | `brevo2._domainkey` | `b2.kasailaya-com.dkim.brevo.com` |
+| TXT | `_dmarc` | `v=DMARC1; p=none; rua=mailto:rua@dmarc.brevo.com` |
 
-Add these records in the DNS control panel for the authenticated domain, then wait for DNS propagation and recheck the domain in Brevo. Some DNS panels append the domain name automatically, so enter only the record name shown above when that is how the panel works. The screenshot reports that the records do not currently match. If the domain in Brevo is a Vercel-provided `*.vercel.app` address, DNS records cannot be added for that shared domain; authenticate a domain you own in Brevo and use the new records it generates instead.
+Add these records in the DNS control panel that manages `kasailaya.com`, then wait for DNS propagation and recheck the domain in Brevo. Some DNS panels append the domain automatically, so enter only the record name shown above when that is how the panel works. If a `_dmarc` TXT record already exists, edit/merge that record instead of creating a duplicate. These values are specific to the current Brevo domain setup; use the dashboard's latest values if they change.
 
 ## Upload storage on Render
 New uploads are written to `KASA_UPLOADS_DIR` when set, otherwise to
