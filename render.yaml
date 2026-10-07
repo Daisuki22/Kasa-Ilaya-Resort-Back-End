@@ -32,7 +32,7 @@ services:
       - key: KASA_SMTP_HOST
         value: smtp-relay.brevo.com
       - key: KASA_SMTP_PORT
-        value: "587"
+        value: "2525"
       - key: KASA_SMTP_USER
         sync: false
       - key: KASA_SMTP_PASS

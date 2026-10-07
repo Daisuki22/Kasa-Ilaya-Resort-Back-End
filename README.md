@@ -23,12 +23,12 @@ database imports.
 Optional SMTP: `KASA_MAIL_ENABLED`, `KASA_SMTP_HOST`, `KASA_SMTP_PORT`, `KASA_SMTP_USER`, `KASA_SMTP_PASS`, `KASA_MAIL_FROM_EMAIL`, `KASA_MAIL_FROM_NAME`, `KASA_ADMIN_NOTIFICATION_EMAIL`.
 
 ### Brevo SMTP setup
-The mail service is already configured to use Brevo's SMTP relay (`smtp-relay.brevo.com:587` with STARTTLS). Set these values in `backend/.env` for local use and in the Render service environment for production:
+The mail service is configured to use Brevo's SMTP relay (`smtp-relay.brevo.com`). Use port `2525` on Render's free web-service plan because Render blocks outbound SMTP ports `25`, `465`, and `587` there. Brevo supports port `2525`; the backend requires STARTTLS. Set these values in `backend/.env` for local use and in the Render service environment for production:
 
 ```env
 KASA_MAIL_ENABLED=true
 KASA_SMTP_HOST=smtp-relay.brevo.com
-KASA_SMTP_PORT=587
+KASA_SMTP_PORT=2525
 KASA_SMTP_USER=<Brevo SMTP login>
 KASA_SMTP_PASS=<Brevo SMTP key>
 KASA_MAIL_FROM_EMAIL=<address verified in Brevo>
