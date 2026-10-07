@@ -87,26 +87,6 @@ function issue(res, user) {
 }
 
 /* =========================================================
-   CAPTCHA
-========================================================= */
-
-function captcha() {
-  const a = crypto.randomInt(2, 13);
-  const b = crypto.randomInt(1, 10);
-  const op = crypto.randomInt(0, 2) ? '+' : '-';
-
-  const x = op === '-' && b > a ? b : a;
-  const y = op === '-' && b > a ? a : b;
-
-  return {
-    question: `${x} ${op} ${y}`,
-    answer: op === '+' ? x + y : x - y
-  };
-}
-
-const captchaStore = new Map();
-
-/* =========================================================
    AGE
 ========================================================= */
 
@@ -282,34 +262,6 @@ router.get('/', async (req, res, next) => {
       return res.json({ valid: true, email: rows[0].email });
     }
 
-    /* ---------- CAPTCHA ---------- */
-
-    if (action === 'captcha-challenge') {
-      const purpose = [
-        'login',
-        'register',
-        'reset'
-      ].includes(req.query.purpose)
-        ? req.query.purpose
-        : 'login';
-
-      const c = captcha();
-
-      const key = `${req.ip}:${purpose}`;
-
-      captchaStore.set(key, {
-        ...c,
-        expires: Date.now() + 600000
-      });
-
-      return res.json({
-        success: true,
-        purpose,
-        question: c.question,
-        expires_in_seconds: 600
-      });
-    }
-
     return res.status(405).json({
       error: 'Unsupported auth action.'
     });
@@ -327,56 +279,6 @@ router.post('/', async (req, res, next) => {
   try {
     const action = req.query.action || '';
     const p = req.body || {};
-
-    /* =====================================================
-       CAPTCHA VERIFY
-    ===================================================== */
-
-    if (action === 'verify-captcha') {
-      const purpose = [
-        'login',
-        'register',
-        'reset'
-      ].includes(p.purpose)
-        ? p.purpose
-        : 'login';
-
-      const key = `${req.ip}:${purpose}`;
-
-      const c = captchaStore.get(key);
-
-      if (!c || c.expires < Date.now()) {
-        return res.status(422).json({
-          success: false,
-          verified: false,
-          error: 'Captcha expired. Please request a new challenge.'
-        });
-      }
-
-      if (Number(p.answer) !== c.answer) {
-        return res.status(422).json({
-          success: false,
-          verified: false,
-          error: 'Captcha answer is incorrect.'
-        });
-      }
-
-      captchaStore.delete(key);
-
-      req.app.locals.captchaVerified ??= new Map();
-
-      req.app.locals.captchaVerified.set(
-        `${req.ip}:${purpose}`,
-        Date.now() + 600000
-      );
-
-      return res.json({
-        success: true,
-        verified: true,
-        purpose,
-        expires_in_seconds: 600
-      });
-    }
 
     /* =====================================================
        LOGIN
