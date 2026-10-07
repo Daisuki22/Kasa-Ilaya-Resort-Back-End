@@ -22,6 +22,15 @@ database imports.
 
 Optional SMTP: `KASA_MAIL_ENABLED`, `KASA_SMTP_HOST`, `KASA_SMTP_PORT`, `KASA_SMTP_USER`, `KASA_SMTP_PASS`, `KASA_MAIL_FROM_EMAIL`, `KASA_MAIL_FROM_NAME`, `KASA_ADMIN_NOTIFICATION_EMAIL`.
 
+### Temporary OTP for local development
+When SMTP is unavailable, run the backend locally with `NODE_ENV=development`.
+Registration and password-reset flows then use `123456` by default, and the
+frontend shows/fills in that temporary code. You can override it locally with
+`KASA_SAMPLE_REGISTRATION_OTP` and `KASA_SAMPLE_RESET_OTP` (each must be six
+digits). These fallback codes are disabled whenever `NODE_ENV=production`, so
+they are not returned by the public production API. Production account recovery
+still requires a working email delivery service.
+
 ### Brevo SMTP setup
 The mail service is configured to use Brevo's SMTP relay (`smtp-relay.brevo.com`). Use port `2525` on Render's free web-service plan because Render blocks outbound SMTP ports `25`, `465`, and `587` there. Brevo supports port `2525`; the backend requires STARTTLS. Set these values in `backend/.env` for local use and in the Render service environment for production:
 

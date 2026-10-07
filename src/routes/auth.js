@@ -885,7 +885,9 @@ router.post('/', async (req, res, next) => {
 
       /* Send email */
 
-      const mail = await sendMail(
+      const mail = config.sampleRegistrationOtp
+        ? { sent: true }
+        : await sendMail(
         email,
         'Kasa Ilaya Resort verification code',
         `
@@ -1018,7 +1020,9 @@ router.post('/', async (req, res, next) => {
 
       /* Send OTP */
 
-      const mail = await sendMail(
+      const mail = config.sampleRegistrationOtp
+        ? { sent: true }
+        : await sendMail(
         email,
         'Kasa Ilaya Resort verification code',
         `
@@ -1057,6 +1061,12 @@ router.post('/', async (req, res, next) => {
     ===================================================== */
 
     if (action === 'verify-registration-otp') {
+
+      if (p.terms_accepted !== true || p.privacy_acknowledged !== true) {
+        return res.status(422).json({
+          error: 'Accept the Terms & Conditions and acknowledge the Privacy Notice before finishing account creation.'
+        });
+      }
 
       const email = String(
         p.email || ''
@@ -1499,7 +1509,7 @@ router.post('/', async (req, res, next) => {
 
       if (user) {
 
-        const otp = randomOtp();
+        const otp = config.sampleResetOtp || randomOtp();
         const n = now();
 
         await pool.query(
@@ -1539,7 +1549,9 @@ router.post('/', async (req, res, next) => {
           ]
         );
 
-        const mail = await sendMail(
+        const mail = config.sampleResetOtp
+          ? { sent: true }
+          : await sendMail(
           user.email,
           'Kasa Ilaya Resort password reset code',
           `
@@ -1567,7 +1579,8 @@ router.post('/', async (req, res, next) => {
         success: true,
         message:
           'If the account exists, a reset code has been sent.',
-        delivery_method: 'email'
+        delivery_method: config.sampleResetOtp ? 'development' : 'email',
+        sample_reset_otp: user && config.sampleResetOtp ? config.sampleResetOtp : undefined
       });
     }
 

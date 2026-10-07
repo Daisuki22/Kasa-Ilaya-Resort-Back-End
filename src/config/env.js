@@ -4,6 +4,7 @@ const required = ['JWT_SECRET','KASA_DB_HOST','KASA_DB_PORT','KASA_DB_NAME','KAS
 for (const key of required) if (!process.env[key]) throw new Error(`Missing required environment variable: ${key}`);
 
 const defaultGoogleClientId = '834800627360-tj8514jf4tqk46oodm358bu9thvub21f.apps.googleusercontent.com';
+const isProduction = (process.env.NODE_ENV || 'development') === 'production';
 const googleClientId = process.env.KASA_GOOGLE_CLIENT_ID
   || process.env.GOOGLE_CLIENT_ID
   || defaultGoogleClientId;
@@ -14,9 +15,16 @@ module.exports = {
   frontendUrl: process.env.FRONTEND_URL || '',
   jwtSecret: process.env.JWT_SECRET,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
-  sampleRegistrationOtp: /^\d{6}$/.test(process.env.KASA_SAMPLE_REGISTRATION_OTP || '')
-    ? process.env.KASA_SAMPLE_REGISTRATION_OTP
-    : ((process.env.NODE_ENV || 'development') === 'production' ? '' : '123456'),
+  sampleRegistrationOtp: !isProduction
+    ? (/^\d{6}$/.test(process.env.KASA_SAMPLE_REGISTRATION_OTP || '')
+      ? process.env.KASA_SAMPLE_REGISTRATION_OTP
+      : '123456')
+    : '',
+  sampleResetOtp: !isProduction
+    ? (/^\d{6}$/.test(process.env.KASA_SAMPLE_RESET_OTP || '')
+      ? process.env.KASA_SAMPLE_RESET_OTP
+      : '123456')
+    : '',
   db: {
     host: process.env.KASA_DB_HOST,
     port: Number(process.env.KASA_DB_PORT || 4000),
