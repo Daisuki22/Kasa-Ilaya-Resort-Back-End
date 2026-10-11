@@ -41,6 +41,9 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
   const paymentNumber = confident && extractedPaymentNumber ? extractedPaymentNumber : cleanReceiptValue(submittedPaymentNumber, 64);
   const paymentReference = confident && extractedReference ? extractedReference : cleanReceiptValue(submittedReference, 128);
   const validDate = /^\d{4}-\d{2}-\d{2}$/.test(String(ocr.date || '')) ? ocr.date : null;
+  const receiptLike = ocr.receiptLike ?? ocr.receipt_like;
+  const recognitionFailed = Boolean(ocr.recognitionFailed ?? ocr.recognition_failed);
+  const notReceipt = receiptLike === false && !recognitionFailed;
   let declineReason = null;
 
   if (validDate && latestAllowedDate && !isReceiptDateToday(validDate, latestAllowedDate)) {
@@ -68,6 +71,8 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
     declineReason = 'Unable to verify receipt information.';
   } else if (confident && ocr.status === 'pending') {
     declineReason = 'This shows a pending authorization, not a completed payment receipt.';
+  } else if (notReceipt) {
+    declineReason = 'This image does not appear to show a payment receipt. Upload a screenshot with visible payment details.';
   }
 
   return {
@@ -77,6 +82,7 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
     extractedPaymentNumber,
     extractedReference,
     declineReason,
+    notReceipt,
     amount: Number.isFinite(Number(comparableAmount)) && Number(comparableAmount) > 0 ? Number(Number(comparableAmount).toFixed(2)) : null,
     amountCurrency: amountCurrency || null,
     date: validDate,

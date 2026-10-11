@@ -85,6 +85,7 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
         try {
           ocr = await recognizeReceipt(target);
         } catch (error) {
+          ocr = { ...createEmptyReceiptOcr(), recognitionFailed: true };
           console.warn('Payment receipt OCR unavailable; keeping proof in manual review', {
             requestId: req.requestId,
             code: error.code,
@@ -108,6 +109,8 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
           date: ocr.date,
           confidence: ocr.confidence,
           status: ocr.status,
+          receipt_like: ocr.receiptLike,
+          recognition_failed: Boolean(ocr.recognitionFailed),
           duplicate_image: duplicateFiles.length > 0,
         };
         let validation = 'pending_review';

@@ -761,6 +761,7 @@ async function validateBookingSubmission(record,db=pool,proofToken=null,userId=n
    submittedReference:record.payment_reference_number,
    latestAllowedDate,
   });
+  if(signals.notReceipt)throw httpError(signals.declineReason,422);
   if(signals.paymentNumber)record.payment_number=signals.paymentNumber;
   if(signals.paymentReference)record.payment_reference_number=signals.paymentReference;
   let duplicateReference=false;

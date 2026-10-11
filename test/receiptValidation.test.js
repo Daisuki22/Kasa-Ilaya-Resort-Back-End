@@ -121,6 +121,16 @@ test('unreadable or incomplete receipts remain pending for manual review', () =>
   }
 });
 
+test('an image with no receipt evidence is declined, but OCR outages stay eligible for review', () => {
+  const nonReceipt = validateReceiptSignals({ ...base, ocr: { confidence: 31, receiptLike: false } });
+  const ocrUnavailable = validateReceiptSignals({ ...base, ocr: { confidence: 0, receiptLike: false, recognitionFailed: true } });
+
+  assert.equal(nonReceipt.notReceipt, true);
+  assert.match(nonReceipt.declineReason, /does not appear to show a payment receipt/i);
+  assert.equal(ocrUnavailable.notReceipt, false);
+  assert.equal(ocrUnavailable.declineReason, null);
+});
+
 test('OCR values override customer supplied details when confidently extracted', () => {
   const result = validateReceiptSignals({
     ...base,

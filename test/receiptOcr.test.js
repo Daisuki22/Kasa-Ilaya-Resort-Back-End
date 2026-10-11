@@ -60,3 +60,13 @@ test('OCR marks an authorization screen as pending instead of a completed receip
   assert.equal(result.status, 'pending');
   assert.equal(result.recipient, 'Weverse Shop');
 });
+
+test('OCR distinguishes an image with no payment or receipt details', () => {
+  const result = extractReceiptFields({ text: '', confidence: 31 });
+  assert.equal(result.receiptLike, false);
+});
+
+test('OCR marks text with payment details as receipt-like even when some fields are missing', () => {
+  const result = extractReceiptFields({ text: 'GCash payment successful', confidence: 55 });
+  assert.equal(result.receiptLike, true);
+});
