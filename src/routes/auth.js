@@ -21,6 +21,41 @@ const { isStrongPassword } = require('../services/passwordPolicy');
 
 const router = express.Router();
 const MAX_OTP_ATTEMPTS = 5;
+const PENDING_GOOGLE_SIGNUP_COOKIE = 'pending_google_signup';
+const PENDING_GOOGLE_SIGNUP_CSRF_COOKIE = 'pending_google_signup_csrf';
+
+const getTrustedFrontendOrigin = (req) => {
+  const configuredOrigins = String(config.frontendUrl || '')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/$/, ''))
+    .filter(Boolean);
+  const requestOrigin = String(req.get('origin') || '').replace(/\/$/, '');
+
+  if (configuredOrigins.includes(requestOrigin)) return requestOrigin;
+  if (config.nodeEnv !== 'production' && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(requestOrigin)) {
+    return requestOrigin;
+  }
+  return configuredOrigins[0] || '';
+};
+
+const redirectGoogleLogin = (req, res, result) => {
+  const origin = getTrustedFrontendOrigin(req);
+  if (!origin) {
+    return res.status(500).json({ error: 'Google sign-in redirect is not configured.' });
+  }
+
+  const destination = new URL('/Login', origin);
+  destination.searchParams.set('google_login', result);
+  return res.redirect(303, destination.toString());
+};
+
+const pendingGoogleCookieOptions = () => ({
+  httpOnly: true,
+  secure: config.nodeEnv === 'production',
+  sameSite: config.nodeEnv === 'production' ? 'none' : 'lax',
+  path: '/api',
+  maxAge: 10 * 60 * 1000
+});
 
 const registrationOtp = () =>
   config.sampleRegistrationOtp || randomOtp();
@@ -228,6 +263,14 @@ router.get('/', async (req, res, next) => {
       });
     }
 
+    if (action === 'google-signup-csrf') {
+      const token = String(req.cookies?.[PENDING_GOOGLE_SIGNUP_CSRF_COOKIE] || '');
+      if (!req.cookies?.[PENDING_GOOGLE_SIGNUP_COOKIE] || !token) {
+        return res.status(401).json({ error: 'The pending Google signup expired. Please continue with Google again.' });
+      }
+      return res.json({ csrf_token: token });
+    }
+
     /* ---------- FIREBASE CONFIG ---------- */
 
     if (action === 'firebase-config') {
@@ -277,8 +320,9 @@ router.get('/', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
-    const action = req.query.action || '';
     const p = req.body || {};
+    const isGoogleRedirectPayload = Boolean(p.credential && p.g_csrf_token);
+    const action = req.query.action || (isGoogleRedirectPayload ? 'google-login' : '');
 
     /* =====================================================
        LOGIN
@@ -345,10 +389,30 @@ router.post('/', async (req, res, next) => {
        GOOGLE LOGIN
     ===================================================== */
 
-    if (action === 'google-login') {
+    if (action === 'google-login' || action === 'google-signup-complete') {
+      const isRedirectFlow = req.query.gis_redirect === '1'
+        || (!req.query.action && Boolean(p.g_csrf_token));
+      const isSignupCompletion = action === 'google-signup-complete';
       const credential = String(
-        p.credential || ''
+        isSignupCompletion ? req.cookies?.[PENDING_GOOGLE_SIGNUP_COOKIE] : p.credential || ''
       ).trim();
+
+      if (isSignupCompletion) {
+        const submittedToken = Buffer.from(String(p.csrf_token || ''));
+        const cookieToken = Buffer.from(String(req.cookies?.[PENDING_GOOGLE_SIGNUP_CSRF_COOKIE] || ''));
+        if (!submittedToken.length || submittedToken.length !== cookieToken.length
+          || !crypto.timingSafeEqual(submittedToken, cookieToken)) {
+          return res.status(403).json({ error: 'Google signup expired or could not be verified. Please continue with Google again.' });
+        }
+      }
+
+      if (isRedirectFlow) {
+        const bodyCsrfToken = String(p.g_csrf_token || '');
+        const cookieCsrfToken = String(req.cookies?.g_csrf_token || '');
+        if (!bodyCsrfToken || !cookieCsrfToken || bodyCsrfToken !== cookieCsrfToken) {
+          return redirectGoogleLogin(req, res, 'csrf_error');
+        }
+      }
 
       if (!credential) {
         return res.status(422).json({
@@ -362,6 +426,7 @@ router.post('/', async (req, res, next) => {
         googleUser =
           await verifyGoogleCredential(credential);
       } catch (error) {
+        if (isRedirectFlow) return redirectGoogleLogin(req, res, 'verification_error');
         return res.status(error.status || 401).json({
           error:
             error.message ||
@@ -376,6 +441,7 @@ router.post('/', async (req, res, next) => {
         .toLowerCase();
 
       if (!email || !emailOk(email)) {
+        if (isRedirectFlow) return redirectGoogleLogin(req, res, 'verification_error');
         return res.status(401).json({
           error: 'Google account email is invalid.'
         });
@@ -384,6 +450,7 @@ router.post('/', async (req, res, next) => {
       let user = await findUserByEmail(email);
 
       if (user?.disabled) {
+        if (isRedirectFlow) return redirectGoogleLogin(req, res, 'account_disabled');
         return res.status(403).json({
           error: 'This account is disabled.'
         });
@@ -395,6 +462,15 @@ router.post('/', async (req, res, next) => {
         ).trim();
 
         if (!birthDate) {
+          if (isRedirectFlow) {
+            res.cookie(PENDING_GOOGLE_SIGNUP_COOKIE, credential, pendingGoogleCookieOptions());
+            res.cookie(
+              PENDING_GOOGLE_SIGNUP_CSRF_COOKIE,
+              crypto.randomBytes(32).toString('hex'),
+              { ...pendingGoogleCookieOptions(), httpOnly: false }
+            );
+            return redirectGoogleLogin(req, res, 'signup_required');
+          }
           return res.status(403).json({
             error: 'Birthday and phone number are required to finish setting up your Google account.',
             code: 'google_signup_details_required'
@@ -522,6 +598,7 @@ router.post('/', async (req, res, next) => {
               code: error.code,
               errno: error.errno
             });
+            if (isRedirectFlow) return redirectGoogleLogin(req, res, 'signup_error');
             return res.status(503).json({
               error: 'Unable to save your Google account right now. Please try again.'
             });
@@ -531,6 +608,7 @@ router.post('/', async (req, res, next) => {
         user = user || await findUserByEmail(email);
         if (!user) {
           console.error('Google account insert completed without a readable user record.');
+          if (isRedirectFlow) return redirectGoogleLogin(req, res, 'signup_error');
           return res.status(503).json({
             error: 'Unable to finish Google sign-in right now. Please try again.'
           });
@@ -553,6 +631,18 @@ router.post('/', async (req, res, next) => {
       }
 
       issue(res, user);
+
+      if (isSignupCompletion) {
+        res.clearCookie(PENDING_GOOGLE_SIGNUP_COOKIE, pendingGoogleCookieOptions());
+        res.clearCookie(PENDING_GOOGLE_SIGNUP_CSRF_COOKIE, {
+          ...pendingGoogleCookieOptions(),
+          httpOnly: false
+        });
+      }
+
+      if (isRedirectFlow) {
+        return redirectGoogleLogin(req, res, 'success');
+      }
 
       return res.json({
         success: true,
