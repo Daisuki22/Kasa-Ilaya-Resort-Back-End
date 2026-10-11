@@ -8,6 +8,8 @@ let recognitionQueue = Promise.resolve();
 const createEmptyReceiptOcr = () => ({
   provider: null,
   amount: null,
+  amountCurrency: null,
+  phpEquivalent: null,
   paymentNumber: null,
   reference: null,
   date: null,
@@ -39,17 +41,53 @@ const parseAmount = (value) => {
   return Number.isFinite(amount) && amount > 0 ? Number(amount.toFixed(2)) : null;
 };
 
-const extractAmount = (text) => {
+const extractAmountDetails = (text) => {
   const source = String(text || '');
-  const labeled = source.match(/(?:amount(?:\s+(?:sent|paid|received))?|total(?:\s+amount)?|sent|paid|received)\s*[:=\-]?\s*(?:(?:php|p|[\p{Sc}])\s*)?([\d,]+(?:\.\d{1,2})?)/iu);
-  if (labeled) return parseAmount(labeled[1]);
+  const lines = source.split(/\r?\n/).filter((line) => !/\b(?:exchange|conversion)\s+rate\b|\brate\s*[:=]/i.test(line));
+  const phpPatterns = [/(?:₱|\bPHP\b)\s*([\d,]+(?:\.\d{1,2})?)/giu, /([\d,]+(?:\.\d{1,2})?)\s*\bPHP\b/giu];
+  let phpEquivalent = null;
 
-  const currencyPrefix = source.match(/(?:[\p{Sc}]|\bPHP\b)\s*([\d,]+(?:\.\d{1,2})?)/iu);
-  if (currencyPrefix) return parseAmount(currencyPrefix[1]);
+  // Receipts may show the charged amount in USD and its peso equivalent elsewhere.
+  // Prefer the explicit PHP amount so it can be compared with the PHP booking price.
+  for (const line of lines) {
+    for (const pattern of phpPatterns) {
+      pattern.lastIndex = 0;
+      const match = pattern.exec(line);
+      const amount = match ? parseAmount(match[1]) : null;
+      if (amount !== null) {
+        phpEquivalent = amount;
+        break;
+      }
+    }
+    if (phpEquivalent !== null) break;
+  }
 
-  const currencySuffix = source.match(/([\d,]+(?:\.\d{1,2})?)\s*\bPHP\b/i);
-  return currencySuffix ? parseAmount(currencySuffix[1]) : null;
+  const labeled = source.match(/(?:amount(?:\s+(?:sent|paid|received))?|total(?:\s+amount)?|sent|paid|received)\s*[:=\-]?\s*(PHP|₱|\$|€|£|¥)?\s*([\d,]+(?:\.\d{1,2})?)/iu);
+  if (labeled) {
+    const marker = labeled[1];
+    const currency = marker ? (/^(?:PHP|₱)$/i.test(marker) ? 'PHP' : marker === '$' ? 'USD' : marker) : null;
+    const amount = parseAmount(labeled[2]);
+    return {
+      amount,
+      currency,
+      phpEquivalent: currency === 'PHP' ? amount : phpEquivalent,
+    };
+  }
+
+  const currencyPrefix = source.match(/(\$|€|£|¥)\s*([\d,]+(?:\.\d{1,2})?)/u);
+  if (currencyPrefix) {
+    const currencies = { '$': 'USD', '€': 'EUR', '£': 'GBP', '¥': 'JPY' };
+    return { amount: parseAmount(currencyPrefix[2]), currency: currencies[currencyPrefix[1]], phpEquivalent };
+  }
+
+  const unlabeled = source.match(/(?:^|\b)(?:amount|total)\s*[:=\-]?\s*([\d,]+(?:\.\d{1,2})?)/i);
+  if (unlabeled) return { amount: parseAmount(unlabeled[1]), currency: null, phpEquivalent };
+  return phpEquivalent !== null
+    ? { amount: phpEquivalent, currency: 'PHP', phpEquivalent }
+    : { amount: null, currency: null, phpEquivalent: null };
 };
+
+const extractAmount = (text) => extractAmountDetails(text).amount;
 
 const normalizeDate = (year, month, day) => {
   const y = Number(year);
@@ -93,22 +131,37 @@ const extractParty = (text, labelPattern) => {
   return line.replace(labelPattern, '').replace(/^\s*[:#-]?\s*/, '').trim().slice(0, 120) || null;
 };
 
+const extractRecipient = (text) => {
+  const content = String(text || '');
+  const labeled = extractParty(content, /^(?:recipient|merchant|sent to|paid to|pay to|payment to)\b\s*/i);
+  if (labeled) return labeled;
+
+  const authorization = content.match(/\byou will authorize\s+(.+?)\s+to charge\b/i);
+  if (authorization) return authorization[1].trim().slice(0, 120) || null;
+
+  return null;
+};
+
 const extractReceiptFields = ({ text, confidence }) => {
   const content = String(text || '');
   const normalized = content.toLowerCase();
   const failed = /\b(failed|declined|reversed|cancelled|canceled)\b/.test(normalized);
+  const pending = /\b(pending|processing|will authorize|authorization pending|awaiting confirmation|payment not completed)\b/.test(normalized);
   const success = /\b(successful|success|completed|paid|sent|received)\b/.test(normalized);
 
+  const amountDetails = extractAmountDetails(content);
   return {
     provider: classifyPaymentProvider(content),
-    amount: extractAmount(content),
+    amount: amountDetails.amount,
+    amountCurrency: amountDetails.currency,
+    phpEquivalent: amountDetails.phpEquivalent,
     paymentNumber: extractPaymentNumber(content),
     reference: extractReference(content),
     date: extractDate(content),
     confidence: Number.isFinite(Number(confidence)) ? Math.max(0, Math.min(100, Number(confidence))) : 0,
-    recipient: extractParty(content, /^(?:recipient|merchant|sent to|paid to|pay to)\b\s*/i),
+    recipient: extractRecipient(content),
     sender: extractParty(content, /^(?:sender|from|paid by|sent by)\b\s*/i),
-    status: failed ? 'failed' : success ? 'successful' : 'unknown',
+    status: failed ? 'failed' : pending ? 'pending' : success ? 'successful' : 'unknown',
   };
 };
 
@@ -138,6 +191,7 @@ module.exports = {
   classifyPaymentProvider,
   createEmptyReceiptOcr,
   extractAmount,
+  extractAmountDetails,
   extractDate,
   extractReceiptFields,
   recognizeReceipt,

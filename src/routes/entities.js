@@ -1,7 +1,7 @@
 const express=require('express'); const router=express.Router(); const {pool}=require('../config/database'); const {id,now,publicUser,isAdmin}=require('../utils'); const {auth}=require('../middleware/auth');
 const {randomUUID,createHash}=require('node:crypto');
 const {getPaymentProofUploadClaims}=require('../services/paymentProofUpload');
-const {classifyPaymentProvider,createEmptyReceiptOcr,MIN_CONFIDENT_VERIFICATION}=require('../services/receiptOcr');
+const {classifyPaymentProvider,createEmptyReceiptOcr,MIN_CONFIDENT_VERIFICATION,recognizeReceipt}=require('../services/receiptOcr');
 const fs=require('node:fs');
 const path=require('node:path');
 const {uploadsDir,bundledUploadsDir}=require('../config/uploads');
@@ -397,11 +397,35 @@ async function acceptBooking(req,res){
    if(booking.payment_status!=='pending_verification'||!String(booking.payment_mode||booking.payment_qr_code_label||'').trim()||!Number.isFinite(Number(booking.payment_amount_due))||Number(booking.payment_amount_due)<=0){
     return await declineAndReturn('Unable to verify receipt information.');
    }
-   const [qrRows]=await connection.query('SELECT id,label FROM payment_qr_codes WHERE id=? LIMIT 1',[booking.payment_qr_code_id]);
+   const [qrRows]=await connection.query('SELECT id,label,account_name,account_number FROM payment_qr_codes WHERE id=? LIMIT 1',[booking.payment_qr_code_id]);
    if(!qrRows[0])return await declineAndReturn('Payment method does not match selected payment method.');
    const receiptAmount=Number(booking.payment_proof_ocr_amount);
-   if(!Number.isFinite(receiptAmount)||Math.abs(receiptAmount-Number(booking.payment_amount_due))>0.01){
+   if(!Number.isFinite(receiptAmount)||Math.round(receiptAmount*100)!==Math.round(Number(booking.payment_amount_due)*100)){
     return await declineAndReturn('Payment amount does not match required amount.');
+   }
+   let acceptedReceiptOcr;
+   try{acceptedReceiptOcr=await recognizeReceipt(receiptPath);}catch{
+    throw httpError('The receipt could not be verified from the uploaded image. Keep this booking pending for manual review.',422);
+   }
+   const acceptedReceiptSignals=validateReceiptSignals({
+    ocr:acceptedReceiptOcr,
+    requiredAmount:booking.payment_amount_due,
+    selectedMethod:qrRows[0].label,
+    expectedAccountName:qrRows[0].account_name,
+    expectedAccountNumber:qrRows[0].account_number,
+    submittedPaymentNumber:booking.payment_number,
+    submittedReference:booking.payment_reference_number,
+    latestAllowedDate,
+   });
+   if(acceptedReceiptSignals.declineReason)return await declineAndReturn(acceptedReceiptSignals.declineReason);
+   const receiptProvider=acceptedReceiptSignals.detectedProvider;
+   const selectedReceiptProvider=classifyPaymentProvider(qrRows[0].label);
+   const submittedReference=String(booking.payment_reference_number||'').trim().toLowerCase();
+   const scannedReference=String(acceptedReceiptSignals.extractedReference||'').trim().toLowerCase();
+   if(acceptedReceiptOcr.status!=='successful'||!acceptedReceiptSignals.amount||!scannedReference
+       ||!submittedReference||scannedReference!==submittedReference
+       ||!receiptProvider||!selectedReceiptProvider||receiptProvider!==selectedReceiptProvider){
+    return await declineAndReturn('The uploaded image does not show a completed payment receipt with a verifiable amount and transaction reference.');
    }
    const detectedProvider=classifyPaymentProvider(booking.payment_proof_ocr_provider);
    const selectedProvider=classifyPaymentProvider(qrRows[0].label);
@@ -718,7 +742,7 @@ async function validateBookingSubmission(record,db=pool,proofToken=null,userId=n
  record.customer_name=String(record.customer_name).trim();
   Object.assign(record,validateRequiredBookingPayment(record,{allowMissingDetails:true}));
  if(!String(record.payment_mode||'').trim()||!record.payment_qr_code_id)throw httpError('Choose a payment method before submitting your booking.',422);
-  const [methods]=await db.query('SELECT id,label,account_number FROM payment_qr_codes WHERE id=? AND is_active=1 LIMIT 1',[record.payment_qr_code_id]);
+  const [methods]=await db.query('SELECT id,label,account_name,account_number FROM payment_qr_codes WHERE id=? AND is_active=1 LIMIT 1',[record.payment_qr_code_id]);
  if(!methods[0])throw httpError('The selected payment method is unavailable. Refresh the page and choose another method.',422);
   record.payment_qr_code_label=methods[0].label;
   record.payment_mode=methods[0].label;
@@ -731,6 +755,7 @@ async function validateBookingSubmission(record,db=pool,proofToken=null,userId=n
    ocr,
    requiredAmount:record.payment_amount_due,
    selectedMethod:methods[0].label,
+   expectedAccountName:methods[0].account_name,
    expectedAccountNumber:methods[0].account_number,
    submittedPaymentNumber:record.payment_number,
    submittedReference:record.payment_reference_number,
@@ -746,7 +771,7 @@ async function validateBookingSubmission(record,db=pool,proofToken=null,userId=n
   const selectedProvider=classifyPaymentProvider(methods[0].label);
   const successfulSignals=Number(ocr.confidence)>=MIN_CONFIDENT_VERIFICATION
    &&Boolean(signals.detectedProvider&&selectedProvider===signals.detectedProvider)
-   &&signals.amount!==null&&Math.abs(signals.amount-Number(record.payment_amount_due))<=0.01
+   &&signals.amount!==null&&Math.round(signals.amount*100)===Math.round(Number(record.payment_amount_due)*100)
    &&Boolean(signals.extractedPaymentNumber)&&Boolean(signals.extractedReference)&&Boolean(signals.date)
    &&signals.date===latestAllowedDate&&ocr.status==='successful';
   record.payment_proof_ocr_provider=signals.detectedProvider;

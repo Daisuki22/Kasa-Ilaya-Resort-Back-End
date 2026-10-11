@@ -99,6 +99,8 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
         const ocrSummary = {
           provider: ocr.provider,
           amount: ocr.amount,
+          amount_currency: ocr.amountCurrency,
+          php_equivalent: ocr.phpEquivalent,
           payment_number: ocr.paymentNumber,
           autofill_payment_number: Number(ocr.confidence) >= MIN_CONFIDENT_VERIFICATION && Boolean(ocr.paymentNumber),
           reference: ocr.reference,
@@ -113,7 +115,7 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
         const selectedQrCodeId = String(req.body.payment_qr_code_id || '').trim();
         if (selectedQrCodeId) {
           const [methods] = await pool.query(
-            'SELECT label,account_number FROM payment_qr_codes WHERE id=? AND is_active=1 LIMIT 1',
+            'SELECT label,account_name,account_number FROM payment_qr_codes WHERE id=? AND is_active=1 LIMIT 1',
             [selectedQrCodeId]
           );
           if (!methods[0]) {
@@ -124,6 +126,7 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
             ocr,
             requiredAmount: Number(req.body.payment_amount_due),
             selectedMethod: methods[0].label,
+            expectedAccountName: methods[0].account_name,
             expectedAccountNumber: methods[0].account_number,
             submittedPaymentNumber: req.body.payment_number,
             submittedReference: req.body.payment_reference_number,

@@ -66,6 +66,37 @@ test('a confidently detected recipient account mismatch is declined', () => {
   assert.equal(result.declineReason, 'Payment method does not match selected payment method.');
 });
 
+test('USD amounts are compared using the PHP equivalent printed on the receipt', () => {
+  const matches = validateReceiptSignals({
+    ...base,
+    requiredAmount: 7000,
+    ocr: { ...validReceipt, amount: 111.61, amountCurrency: 'USD', phpEquivalent: 7000 },
+  });
+  const mismatches = validateReceiptSignals({
+    ...base,
+    requiredAmount: 7000,
+    ocr: { ...validReceipt, amount: 111.61, amountCurrency: 'USD', phpEquivalent: 6999.99 },
+  });
+
+  assert.equal(matches.amount, 7000);
+  assert.equal(matches.declineReason, null);
+  assert.equal(mismatches.declineReason, 'Payment amount does not match required amount.');
+});
+
+test('a confidently detected pending authorization is rejected', () => {
+  const result = validateReceiptSignals({ ...base, ocr: { ...validReceipt, status: 'pending' } });
+  assert.equal(result.declineReason, 'This shows a pending authorization, not a completed payment receipt.');
+});
+
+test('a confidently detected merchant mismatch is declined', () => {
+  const result = validateReceiptSignals({
+    ...base,
+    expectedAccountName: 'Kasa Ilaya Resort',
+    ocr: { ...validReceipt, recipient: 'Weverse Shop' },
+  });
+  assert.equal(result.declineReason, 'The receipt recipient does not match the selected resort payment account.');
+});
+
 test('a receipt dated before the latest allowed local date is declined with both dates', () => {
   const result = validateReceiptSignals({ ...base, ocr: { ...validReceipt, date: '2026-09-30' } });
   assert.equal(result.declineReason, 'Receipt is outdated. Only receipts dated today are accepted. Receipt date: 2026-09-30. Required date: 2026-10-04.');

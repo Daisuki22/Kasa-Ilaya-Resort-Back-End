@@ -10,13 +10,32 @@ const isReceiptDateToday = (receiptDate, todayManila) => /^\d{4}-\d{2}-\d{2}$/.t
   && /^\d{4}-\d{2}-\d{2}$/.test(String(todayManila || ''))
   && receiptDate === todayManila;
 
-function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expectedAccountNumber, submittedPaymentNumber, submittedReference, latestAllowedDate }) {
+function normalizeRecipientName(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+}
+
+function recipientMatchesExpected(recipient, expectedName) {
+  const actualTokens = normalizeRecipientName(recipient);
+  const expectedTokens = normalizeRecipientName(expectedName);
+  if (!actualTokens.length || !expectedTokens.length) return true;
+  const matches = expectedTokens.filter((token) => actualTokens.includes(token)).length;
+  const requiredMatches = expectedTokens.length <= 2 ? expectedTokens.length : Math.max(2, Math.ceil(expectedTokens.length * 0.6));
+  return matches >= requiredMatches;
+}
+
+function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expectedAccountName, expectedAccountNumber, submittedPaymentNumber, submittedReference, latestAllowedDate }) {
   const confidence = Number(ocr.confidence) || 0;
   const confident = confidence >= MIN_CONFIDENT_MISMATCH;
   const detectedProvider = classifyPaymentProvider(ocr.provider);
   const selectedProvider = classifyPaymentProvider(selectedMethod);
   const extractedPaymentNumber = cleanReceiptValue(ocr.paymentNumber, 64);
   const extractedReference = cleanReceiptValue(ocr.reference, 128);
+  const amountCurrency = String(ocr.amountCurrency || '').toUpperCase();
+  const comparableAmount = amountCurrency === 'USD'
+    ? ocr.phpEquivalent
+    : amountCurrency && amountCurrency !== 'PHP'
+      ? null
+      : ocr.amount;
   const expectedAccountDigits = String(expectedAccountNumber || '').replace(/\D/g, '');
   const recipientDigits = String(ocr.recipient || '').replace(/\D/g, '');
   const paymentNumber = confident && extractedPaymentNumber ? extractedPaymentNumber : cleanReceiptValue(submittedPaymentNumber, 64);
@@ -28,15 +47,17 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
     declineReason = validDate < latestAllowedDate
       ? `Receipt is outdated. Only receipts dated today are accepted. Receipt date: ${validDate}. Required date: ${latestAllowedDate}.`
       : `Receipt date is invalid. Only receipts dated today are accepted. Receipt date: ${validDate}. Required date: ${latestAllowedDate}.`;
-  } else if (Number.isFinite(Number(ocr.amount)) && Number(ocr.amount) > 0
+  } else if (Number.isFinite(Number(comparableAmount)) && Number(comparableAmount) > 0
       && Number.isFinite(Number(requiredAmount)) && Number(requiredAmount) > 0
-      && Math.abs(Number(ocr.amount) - Number(requiredAmount)) > 0.01) {
+      && Math.round(Number(comparableAmount) * 100) !== Math.round(Number(requiredAmount) * 100)) {
     declineReason = 'Payment amount does not match required amount.';
   } else if (detectedProvider && selectedProvider && detectedProvider !== selectedProvider) {
     declineReason = 'Payment method does not match selected payment method.';
   } else if (confident && expectedAccountDigits.length >= 5 && recipientDigits.length === expectedAccountDigits.length
       && recipientDigits !== expectedAccountDigits) {
     declineReason = 'Payment method does not match selected payment method.';
+  } else if (confident && ocr.recipient && expectedAccountName && !recipientMatchesExpected(ocr.recipient, expectedAccountName)) {
+    declineReason = 'The receipt recipient does not match the selected resort payment account.';
   } else if (confident && extractedPaymentNumber && submittedPaymentNumber
       && extractedPaymentNumber.replace(/\D/g, '') !== String(submittedPaymentNumber).replace(/\D/g, '')) {
     declineReason = 'Invalid payment/reference information.';
@@ -45,6 +66,8 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
     declineReason = 'Invalid payment/reference information.';
   } else if (confident && ocr.status === 'failed') {
     declineReason = 'Unable to verify receipt information.';
+  } else if (confident && ocr.status === 'pending') {
+    declineReason = 'This shows a pending authorization, not a completed payment receipt.';
   }
 
   return {
@@ -54,7 +77,8 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
     extractedPaymentNumber,
     extractedReference,
     declineReason,
-    amount: Number.isFinite(Number(ocr.amount)) && Number(ocr.amount) > 0 ? Number(Number(ocr.amount).toFixed(2)) : null,
+    amount: Number.isFinite(Number(comparableAmount)) && Number(comparableAmount) > 0 ? Number(Number(comparableAmount).toFixed(2)) : null,
+    amountCurrency: amountCurrency || null,
     date: validDate,
     confidence: Math.max(0, Math.min(100, confidence)),
   };

@@ -38,3 +38,25 @@ test('OCR parser extracts a labeled payment account number', () => {
   });
   assert.equal(result.paymentNumber, '0917 123 4567');
 });
+
+test('OCR keeps a PayPal USD charge and its printed peso equivalent separate', () => {
+  const result = extractReceiptFields({
+    text: 'PayPal\nAmount: $24.04\nPaid with VISA Debit Card\nPHP 7,000.00\nYour exchange rate: PHP 1.00 = $0.02\nTransaction ID: 89X62941W33447823\nDate: Oct 12, 2026',
+    confidence: 96,
+  });
+
+  assert.equal(result.amount, 24.04);
+  assert.equal(result.amountCurrency, 'USD');
+  assert.equal(result.phpEquivalent, 7000);
+  assert.equal(result.reference, '89X62941W33447823');
+});
+
+test('OCR marks an authorization screen as pending instead of a completed receipt', () => {
+  const result = extractReceiptFields({
+    text: 'PayPal\nPaid with VISA Debit Card\nYou will authorize Weverse Shop to charge your PayPal account\nTransaction ID: 89X62941W33447823',
+    confidence: 96,
+  });
+
+  assert.equal(result.status, 'pending');
+  assert.equal(result.recipient, 'Weverse Shop');
+});
