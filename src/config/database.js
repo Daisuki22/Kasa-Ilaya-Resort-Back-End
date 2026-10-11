@@ -61,14 +61,20 @@ async function ensureAccountSettingsSchema(){
     await pool.query(`CREATE TABLE auth_sessions (
       id VARCHAR(64) NOT NULL PRIMARY KEY,
       user_id VARCHAR(64) NOT NULL,
+      token_fingerprint CHAR(64) NULL,
       user_agent VARCHAR(512) NULL,
       created_at DATETIME NOT NULL,
       last_seen_at DATETIME NOT NULL,
       expires_at DATETIME NOT NULL,
       revoked_at DATETIME NULL,
       KEY idx_auth_sessions_user (user_id),
-      KEY idx_auth_sessions_expiry (expires_at)
+      KEY idx_auth_sessions_expiry (expires_at),
+      UNIQUE KEY idx_auth_sessions_token_fingerprint (token_fingerprint)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`);
+  }
+  await addColumnIfMissing('auth_sessions','token_fingerprint','token_fingerprint CHAR(64) NULL');
+  if(!await indexExists('auth_sessions','idx_auth_sessions_token_fingerprint')){
+    await pool.query('ALTER TABLE auth_sessions ADD UNIQUE KEY idx_auth_sessions_token_fingerprint (token_fingerprint)');
   }
   if(!await tableExists('account_activity')){
     await pool.query(`CREATE TABLE account_activity (

@@ -3,13 +3,15 @@
 CREATE TABLE IF NOT EXISTS auth_sessions (
   id VARCHAR(64) NOT NULL PRIMARY KEY,
   user_id VARCHAR(64) NOT NULL,
+  token_fingerprint CHAR(64) NULL,
   user_agent VARCHAR(512) NULL,
   created_at DATETIME NOT NULL,
   last_seen_at DATETIME NOT NULL,
   expires_at DATETIME NOT NULL,
   revoked_at DATETIME NULL,
   KEY idx_auth_sessions_user (user_id),
-  KEY idx_auth_sessions_expiry (expires_at)
+  KEY idx_auth_sessions_expiry (expires_at),
+  UNIQUE KEY idx_auth_sessions_token_fingerprint (token_fingerprint)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS account_activity (

@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const crypto = require('node:crypto');
 const config = require('../config/env');
 const { pool } = require('../config/database');
 const { findUserById, publicUser } = require('../utils');
@@ -19,18 +20,7 @@ async function auth(req, res, next) {
     }
 
     const claims = jwt.verify(token, config.jwtSecret);
-    if (!claims.sid || !claims.sub) {
-      req.user = null;
-      return next();
-    }
-
-    const [sessions] = await pool.query(
-      `SELECT id FROM auth_sessions
-       WHERE id=? AND user_id=? AND revoked_at IS NULL AND expires_at>NOW()
-       LIMIT 1`,
-      [String(claims.sid), String(claims.sub)]
-    );
-    if (!sessions[0]) {
+    if (!claims.sub) {
       req.user = null;
       return next();
     }
@@ -41,9 +31,87 @@ async function auth(req, res, next) {
       return next();
     }
 
+    let sessionId = claims.sid ? String(claims.sid) : '';
+    let [sessions] = sessionId
+      ? await pool.query(
+        `SELECT id FROM auth_sessions
+         WHERE id=? AND user_id=? AND revoked_at IS NULL AND expires_at>NOW()
+         LIMIT 1`,
+        [sessionId, String(claims.sub)]
+      )
+      : [ [] ];
+
+    // Existing, unexpired cookies predate session IDs. Fingerprint the original
+    // JWT so it can be adopted once and still revoked if this device is signed out.
+    if (!claims.sid) {
+      const fingerprint = crypto.createHash('sha256').update(token).digest('hex');
+      const [legacySessions] = await pool.query(
+        `SELECT id, revoked_at, expires_at FROM auth_sessions
+         WHERE token_fingerprint=? AND user_id=? LIMIT 1`,
+        [fingerprint, String(claims.sub)]
+      );
+      if (legacySessions[0]) {
+        if (legacySessions[0].revoked_at || new Date(legacySessions[0].expires_at) <= new Date()) {
+          req.user = null;
+          return next();
+        }
+        sessionId = legacySessions[0].id;
+        sessions = [{ id: sessionId }];
+      } else {
+        sessionId = crypto.randomUUID();
+        const expiresAt = new Date(Number(claims.exp || 0) * 1000);
+        if (!claims.exp || Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()) {
+          req.user = null;
+          return next();
+        }
+        const [insert] = await pool.query(
+          `INSERT IGNORE INTO auth_sessions
+           (id,user_id,token_fingerprint,user_agent,created_at,last_seen_at,expires_at)
+           VALUES (?,?,?,?,NOW(),NOW(),?)`,
+          [sessionId, String(claims.sub), fingerprint, String(req.get('user-agent') || '').slice(0, 512) || null, expiresAt.toISOString().slice(0, 19).replace('T', ' ')]
+        );
+        const [adopted] = await pool.query(
+          `SELECT id, revoked_at, expires_at FROM auth_sessions
+           WHERE token_fingerprint=? AND user_id=? LIMIT 1`,
+          [fingerprint, String(claims.sub)]
+        );
+        if (!adopted[0] || adopted[0].revoked_at || new Date(adopted[0].expires_at) <= new Date()) {
+          req.user = null;
+          return next();
+        }
+        sessionId = adopted[0].id;
+        sessions = [{ id: sessionId }];
+        if (insert.affectedRows) {
+          await pool.query(
+            `INSERT INTO account_activity (id,user_id,event_type,description,created_at)
+             VALUES (?,?, 'session_tracking_enabled', ?, NOW())`,
+            [`account-activity-${crypto.randomUUID()}`, String(claims.sub), 'This device was added to session tracking.']
+          );
+        }
+        const remainingSeconds = Math.max(1, Number(claims.exp) - Math.floor(Date.now() / 1000));
+        const upgradedToken = jwt.sign(
+          { sub: user.id, role: user.role, app_role: user.app_role, sid: sessionId },
+          config.jwtSecret,
+          { expiresIn: remainingSeconds }
+        );
+        res.cookie?.('kasa_token', upgradedToken, {
+          httpOnly: true,
+          secure: config.nodeEnv === 'production',
+          sameSite: config.nodeEnv === 'production' ? 'none' : 'lax',
+          path: '/api',
+          maxAge: remainingSeconds * 1000
+        });
+      }
+    }
+
+    if (!sessions[0]) {
+      req.user = null;
+      return next();
+    }
+
     req.user = user;
     req.publicUser = publicUser(user);
-    req.authSessionId = String(claims.sid);
+    req.authSessionId = sessionId;
     await pool.query(
       `UPDATE auth_sessions SET last_seen_at=NOW()
        WHERE id=? AND last_seen_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`,
