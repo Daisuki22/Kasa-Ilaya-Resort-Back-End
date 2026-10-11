@@ -22,6 +22,12 @@ async function tableExists(table){const [r]=await pool.query('SELECT COUNT(*) AS
 async function columnExists(table,column){const [r]=await pool.query('SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name=?',[table,column]);return Number(r[0]?.count||0)>0;}
 async function indexExists(table,indexName){const [r]=await pool.query('SELECT COUNT(*) AS count FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name=? AND index_name=?',[table,indexName]);return Number(r[0]?.count||0)>0;}
 async function addColumnIfMissing(table,column,definition){if(!await columnExists(table,column))await pool.query(`ALTER TABLE ${table} ADD COLUMN ${definition}`);}
+async function ensurePaymentQrCodeImageCapacity(){
+  if(!await tableExists('payment_qr_codes'))return;
+  const [rows]=await pool.query('SELECT data_type FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name=? LIMIT 1',['payment_qr_codes','image_url']);
+  const dataType=String(rows[0]?.data_type||'').toLowerCase();
+  if(dataType&&!['mediumtext','longtext'].includes(dataType))await pool.query('ALTER TABLE `payment_qr_codes` MODIFY COLUMN `image_url` MEDIUMTEXT NOT NULL');
+}
 async function ensureRuntimeSchema(){
   if(await tableExists('pending_registrations')&&!await indexExists('pending_registrations','pending_registrations_email_unique')){
     await pool.query('ALTER TABLE pending_registrations ADD UNIQUE KEY pending_registrations_email_unique (email)');
@@ -50,4 +56,4 @@ async function ensureRuntimeSchema(){
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`);
   }
 }
-module.exports={pool,testConnection,ensureRuntimeSchema};
+module.exports={pool,testConnection,ensureRuntimeSchema,ensurePaymentQrCodeImageCapacity};
