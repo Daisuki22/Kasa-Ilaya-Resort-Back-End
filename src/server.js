@@ -9,11 +9,12 @@ const {expirePastPendingBookings}=require('./services/bookingExpiration');
 const preferWebp=(root)=> (req,res,next)=>{if(!['GET','HEAD'].includes(req.method)||!String(req.headers.accept||'').includes('image/webp'))return next();try{const parsed=new URL(req.url,'http://local.invalid');const relativePath=decodeURIComponent(parsed.pathname).replace(/^[/\\]+/,'');const extension=path.extname(relativePath);if(!['.jpg','.jpeg','.png'].includes(extension.toLowerCase()))return next();const rootPath=path.resolve(root);const webpPath=path.resolve(rootPath,relativePath.slice(0,-extension.length)+'.webp');if(!webpPath.startsWith(rootPath+path.sep)||!fs.existsSync(webpPath)||!fs.statSync(webpPath).isFile())return next();req.url=`${parsed.pathname.slice(0,-extension.length)}.webp${parsed.search}`;res.vary('Accept');return next();}catch{return next();}};
 const app=express();app.disable('x-powered-by');app.set('trust proxy',1);app.use((req,res,next)=>{req.requestId=randomUUID();res.setHeader('X-Request-Id',req.requestId);next();});app.use(helmet({crossOriginResourcePolicy:{policy:'cross-origin'}}));app.use(cookieParser());const configuredOrigins = String(config.frontendUrl || '').split(',').map(v=>v.trim().replace(/\/$/, '')).filter(Boolean);const allowedOrigins = new Set(configuredOrigins.length ? configuredOrigins : config.nodeEnv === 'production' ? [] : ['http://localhost:5173', 'http://127.0.0.1:5173']);
 const corsMiddleware=cors({origin:(origin,cb)=>{if(!origin||allowedOrigins.has(String(origin).replace(/\/$/, '')))return cb(null,true);return cb(new Error('CORS origin not allowed'));},credentials:true});
+app.use(['/api/auth','/api/auth.php'],express.urlencoded({extended:true,limit:'10mb'}));
 app.use((req,res,next)=>{
-  const requestOrigin=String(req.get('origin')||'').replace(/\/$/,'');
   const isGoogleIdentityRedirect=req.method==='POST'
     && ['/api/auth','/api/auth.php'].includes(req.path)
-    && requestOrigin==='https://accounts.google.com';
+    && req.is('application/x-www-form-urlencoded')
+    && Boolean(req.body?.credential&&req.body?.g_csrf_token);
   if(isGoogleIdentityRedirect)return next();
   return corsMiddleware(req,res,next);
 });
