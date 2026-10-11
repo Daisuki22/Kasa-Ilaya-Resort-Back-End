@@ -97,12 +97,30 @@ const ageFromDateOnly = (value) => {
    AUTH TOKEN
 ========================================================= */
 
-function issue(res, user) {
+async function recordAccountActivity(userId, eventType, description) {
+  await pool.query(
+    `INSERT INTO account_activity (id,user_id,event_type,description,created_at)
+     VALUES (?,?,?,?,?)`,
+    [id('account-activity'), userId, eventType, description, now()]
+  );
+}
+
+async function issue(res, user, req) {
+  const sessionId = crypto.randomUUID();
+  const createdAt = now();
+  const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+  await pool.query(
+    `INSERT INTO auth_sessions (id,user_id,user_agent,created_at,last_seen_at,expires_at)
+     VALUES (?,?,?,?,?,?)`,
+    [sessionId, user.id, String(req?.get('user-agent') || '').slice(0, 512) || null, createdAt, createdAt, expiresAt]
+  );
+  await recordAccountActivity(user.id, 'sign_in', 'Signed in successfully.');
   const token = jwt.sign(
     {
       sub: user.id,
       role: user.role,
-      app_role: user.app_role
+      app_role: user.app_role,
+      sid: sessionId
     },
     config.jwtSecret,
     {
@@ -254,6 +272,31 @@ router.get('/', async (req, res, next) => {
       return res.json(req.publicUser);
     }
 
+    if (action === 'account-sessions') {
+      if (!req.user || !req.authSessionId) return res.status(401).json({ error: 'Not authenticated.' });
+      const [rows] = await pool.query(
+        `SELECT id, user_agent, created_at, last_seen_at, expires_at
+         FROM auth_sessions
+         WHERE user_id=? AND revoked_at IS NULL AND expires_at>NOW()
+         ORDER BY last_seen_at DESC`,
+        [req.user.id]
+      );
+      return res.json(rows.map((session) => ({ ...session, current: session.id === req.authSessionId })));
+    }
+
+    if (action === 'account-activity') {
+      if (!req.user) return res.status(401).json({ error: 'Not authenticated.' });
+      const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+      const limit = 25;
+      const [rows] = await pool.query(
+        `SELECT event_type, description, created_at
+         FROM account_activity WHERE user_id=?
+         ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+        [req.user.id, limit, (page - 1) * limit]
+      );
+      return res.json({ items: rows, page, has_more: rows.length === limit });
+    }
+
     /* ---------- GOOGLE CONFIG ---------- */
 
     if (action === 'google-config') {
@@ -324,6 +367,33 @@ router.post('/', async (req, res, next) => {
     const isGoogleRedirectPayload = Boolean(p.credential && p.g_csrf_token);
     const action = req.query.action || (isGoogleRedirectPayload ? 'google-login' : '');
 
+    if (action === 'revoke-session') {
+      if (!req.user || !req.authSessionId) return res.status(401).json({ error: 'Not authenticated.' });
+      const sessionId = String(p.session_id || '').trim();
+      if (!sessionId || sessionId === req.authSessionId) {
+        return res.status(422).json({ error: 'Choose another active device to sign out.' });
+      }
+      const [result] = await pool.query(
+        `UPDATE auth_sessions SET revoked_at=NOW()
+         WHERE id=? AND user_id=? AND revoked_at IS NULL AND expires_at>NOW()`,
+        [sessionId, req.user.id]
+      );
+      if (!result.affectedRows) return res.status(404).json({ error: 'That session is no longer active.' });
+      await recordAccountActivity(req.user.id, 'session_revoked', 'Signed out another device.');
+      return res.json({ success: true });
+    }
+
+    if (action === 'revoke-other-sessions') {
+      if (!req.user || !req.authSessionId) return res.status(401).json({ error: 'Not authenticated.' });
+      const [result] = await pool.query(
+        `UPDATE auth_sessions SET revoked_at=NOW()
+         WHERE user_id=? AND id<>? AND revoked_at IS NULL AND expires_at>NOW()`,
+        [req.user.id, req.authSessionId]
+      );
+      await recordAccountActivity(req.user.id, 'sessions_revoked', 'Signed out all other devices.');
+      return res.json({ success: true, revoked_count: result.affectedRows || 0 });
+    }
+
     /* =====================================================
        LOGIN
     ===================================================== */
@@ -376,7 +446,7 @@ router.post('/', async (req, res, next) => {
         });
       }
 
-      issue(res, user);
+      await issue(res, user, req);
 
       return res.json({
         success: true,
@@ -630,7 +700,7 @@ router.post('/', async (req, res, next) => {
         user = await findUserByEmail(email);
       }
 
-      issue(res, user);
+      await issue(res, user, req);
 
       if (isSignupCompletion) {
         res.clearCookie(PENDING_GOOGLE_SIGNUP_COOKIE, pendingGoogleCookieOptions());
@@ -656,6 +726,14 @@ router.post('/', async (req, res, next) => {
     ===================================================== */
 
     if (action === 'logout') {
+      if (req.user && req.authSessionId) {
+        await pool.query(
+          `UPDATE auth_sessions SET revoked_at=NOW()
+           WHERE id=? AND user_id=? AND revoked_at IS NULL`,
+          [req.authSessionId, req.user.id]
+        );
+        await recordAccountActivity(req.user.id, 'sign_out', 'Signed out this device.');
+      }
       res.clearCookie('kasa_token', { path: '/api' });
 
       return res.json({
@@ -1291,7 +1369,7 @@ router.post('/', async (req, res, next) => {
          */
 
         if (user) {
-          issue(res, user);
+          await issue(res, user, req);
         }
 
         return res.json({
@@ -1333,13 +1411,7 @@ router.post('/', async (req, res, next) => {
         }
       }
       if (Object.prototype.hasOwnProperty.call(p, 'email')) {
-        const email = String(p.email || '').trim().toLowerCase();
-        if (!emailOk(email)) return res.status(422).json({ error: 'Enter a valid email address.' });
-        const [duplicates] = await pool.query(
-          'SELECT id FROM users WHERE LOWER(email)=? AND id<>? LIMIT 1',
-          [email, req.user.id]
-        );
-        if (duplicates[0]) return res.status(409).json({ error: 'That email address is already in use.' });
+        return res.status(409).json({ error: 'Email changes require a separate verified-email flow. Contact resort support to request an update.' });
       }
       if (Object.prototype.hasOwnProperty.call(p, 'phone')) {
         const phone = String(p.phone || '').trim();
@@ -1366,7 +1438,6 @@ router.post('/', async (req, res, next) => {
       for (
         const f of [
           'full_name',
-          'email',
           'phone',
           'birth_date',
           'profile_image_url'
@@ -1382,9 +1453,7 @@ router.post('/', async (req, res, next) => {
 
           fields.push(`${f}=?`);
 
-          vals.push(f === 'email'
-            ? String(p[f]).trim().toLowerCase()
-            : f === 'full_name'
+          vals.push(f === 'full_name'
               ? String(p[f]).trim()
               : f === 'birth_date'
                 ? String(p[f] || '').trim() || null
@@ -1413,6 +1482,8 @@ router.post('/', async (req, res, next) => {
          WHERE id=?`,
         vals
       );
+
+      await recordAccountActivity(req.user.id, 'profile_updated', 'Updated personal account information.');
 
       return res.json(
         publicUser(
@@ -1482,6 +1553,13 @@ router.post('/', async (req, res, next) => {
           req.user.id
         ]
       );
+
+      await pool.query(
+        `UPDATE auth_sessions SET revoked_at=NOW()
+         WHERE user_id=? AND id<>? AND revoked_at IS NULL`,
+        [req.user.id, req.authSessionId || '']
+      );
+      await recordAccountActivity(req.user.id, 'password_changed', 'Changed the account password. Other devices were signed out.');
 
       return res.json({
         success: true
@@ -1798,6 +1876,13 @@ router.post('/', async (req, res, next) => {
           rec.id
         ]
       );
+
+      await pool.query(
+        `UPDATE auth_sessions SET revoked_at=NOW()
+         WHERE user_id=? AND revoked_at IS NULL`,
+        [rec.user_id]
+      );
+      await recordAccountActivity(rec.user_id, 'password_reset', 'Reset the account password. All active devices were signed out.');
 
       return res.json({
         success: true
