@@ -688,8 +688,10 @@ async function bookingAction(req,res,next){
   if(['PATCH','PUT'].includes(req.method)&&entity==='Booking'&&modifiesDamageFee){
    if(!isAdmin(req.user))return res.status(403).json({error:'Only resort administrators can add or update a damage fee.'});
    if(req.body.additional_fee_status==='paid')return res.status(400).json({error:'Use the damage-fee payment confirmation action to record payment.'});
-   const [feeRows]=await pool.query('SELECT payment_status,additional_fee_status FROM bookings WHERE id=? LIMIT 1',[String(req.query.id||'')]);
+   const [feeRows]=await pool.query('SELECT booking_date,payment_status,additional_fee_status FROM bookings WHERE id=? LIMIT 1',[String(req.query.id||'')]);
    if(!feeRows[0])return res.status(404).json({error:'Booking not found.'});
+   const bookingDate=dateOnly(feeRows[0].booking_date);
+   if(!isValidDateKey(bookingDate)||bookingDate<getTodayManilaDate())return res.status(409).json({error:'A damage fee can only be added or updated on or before the booking date.'});
    if(Number(req.body.additional_fee_amount||0)>0&&String(feeRows[0].payment_status||'').toLowerCase()!=='paid')return res.status(409).json({error:'A damage fee can only be added to a booking with paid booking status.'});
    if(feeRows[0].additional_fee_status==='paid')return res.status(409).json({error:'A paid damage fee cannot be changed.'});
   }
