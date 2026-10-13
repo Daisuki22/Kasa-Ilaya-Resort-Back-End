@@ -114,8 +114,22 @@ const extractDate = (text) => {
 };
 
 const extractReference = (text) => {
-  const match = String(text || '').match(/\b(?:payment\s+reference|transaction\s+reference|reference(?:\s*(?:no\.?|number|#))?|ref(?:erence)?(?:\s*(?:no\.?|number|#))?|transaction(?:\s*(?:id|no\.?|number|#))?|trace(?:\s*(?:no\.?|number|#))?)\s*[:#=-]?\s*([A-Z0-9][A-Z0-9-]{4,39})/i);
-  return match ? match[1].toUpperCase() : null;
+  const source = String(text || '');
+  const label = /\b(?:payment\s+(?:reference|ref)|transaction\s+(?:reference|ref|id|number|no\.?)|reference|ref|trace)(?:\s*(?:no\.?|number|#))?/i;
+  const labelMatch = source.match(label);
+  if (!labelMatch) return null;
+
+  const start = labelMatch.index + labelMatch[0].length;
+  const valueWindow = source.slice(start, start + 140)
+    .replace(/^\s*[:#=-]?\s*/, '')
+    .split(/\b(?:date(?:\s*(?:&|and)\s*time)?|time|amount|status|successful|completed|paid|sent\s+to|recipient|balance|service\s+fee|fee)\b\s*[:#=-]?/i, 1)[0];
+  const candidate = valueWindow.match(/[A-Z0-9][A-Z0-9\s-]{3,60}[A-Z0-9]/i);
+  if (!candidate) return null;
+
+  // OCR can insert spaces or line breaks into long numeric IDs. Remove those
+  // separators while preserving meaningful hyphens in alphanumeric IDs.
+  const reference = candidate[0].toUpperCase().replace(/\s+/g, '').replace(/-+/g, '-');
+  return /^[A-Z0-9][A-Z0-9-]{4,39}$/.test(reference) ? reference : null;
 };
 
 const isPhilippineMobileNumber = (value) => {
