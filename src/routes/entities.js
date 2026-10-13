@@ -9,7 +9,7 @@ const {createNotification,notifySafely,notifyBookingAdmins}=require('../services
 const {quoteBooking}=require('../services/bookingPricing');
 const {findExistingBookingSubmission}=require('../services/bookingSubmission');
 const {validateRequiredBookingPayment}=require('../services/bookingPaymentValidation');
-const {isReceiptDateToday,validateReceiptSignals}=require('../services/receiptValidation');
+const {validateReceiptSignals}=require('../services/receiptValidation');
 const {expirePastPendingBookings}=require('../services/bookingExpiration');
 const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,calendarDaysUntil,dateKeyFromDate,getTodayManilaDate,getBookingEndDateTime,getBookingStartDateTime,getTourTime,isBookingCancellationAllowed,isScheduleAvailable,isValidDateKey}=require('../services/bookingSchedule');
 const BOOKING_SCHEDULE_LOCK='kasa_ilaya_booking_schedule';
@@ -376,72 +376,19 @@ async function acceptBooking(req,res){
   connection=await pool.getConnection();
   await connection.beginTransaction();
   transactionStarted=true;
-   const [rows]=await connection.query("SELECT *,DATE_FORMAT(payment_proof_ocr_date,'%Y-%m-%d') AS receipt_date_key FROM bookings WHERE id=? FOR UPDATE",[bookingId]);
+   const [rows]=await connection.query('SELECT * FROM bookings WHERE id=? FOR UPDATE',[bookingId]);
    const booking=rows[0];
    if(!booking)throw httpError('Reservation not found.',404);
    if(booking.status!=='pending')throw httpError('Only pending bookings can be accepted.',409);
    const receiptPath=uploadedReceiptPath(booking.receipt_url);
    if(!receiptPath)throw httpError('A valid payment receipt is required before accepting this booking.',422);
-   const receiptDate=String(booking.receipt_date_key||'').slice(0,10);
-   const latestAllowedDate=getTodayManilaDate();
-   const invalidDateReason=receiptDate<latestAllowedDate
-    ? `Receipt is outdated. Only receipts dated today are accepted. Receipt date: ${receiptDate}. Required date: ${latestAllowedDate}.`
-    : `Receipt date is invalid. Only receipts dated today are accepted. Receipt date: ${receiptDate}. Required date: ${latestAllowedDate}.`;
-   const declineAndReturn=async(reason)=>{
-    await connection.query("UPDATE bookings SET status='rejected',payment_status='declined',payment_proof_review='auto_declined',rejected_at=COALESCE(rejected_at,NOW()),rejection_reason=?,updated_date=NOW() WHERE id=? AND status='pending'",[reason,booking.id]);
-    const [declinedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);
-    await connection.commit();
-    transactionStarted=false;
-    return res.status(400).json({success:false,status:'Declined',reason,data:declinedRows[0]?deserialize(MAP.Booking,declinedRows[0]):undefined});
-   };
-   if(booking.payment_status!=='pending_verification'||!String(booking.payment_mode||booking.payment_qr_code_label||'').trim()||!Number.isFinite(Number(booking.payment_amount_due))||Number(booking.payment_amount_due)<=0){
-    return await declineAndReturn('Unable to verify receipt information.');
-   }
-   const [qrRows]=await connection.query('SELECT id,label,account_name,account_number FROM payment_qr_codes WHERE id=? LIMIT 1',[booking.payment_qr_code_id]);
-   if(!qrRows[0])return await declineAndReturn('Payment method does not match selected payment method.');
-   const receiptAmount=Number(booking.payment_proof_ocr_amount);
-   if(!Number.isFinite(receiptAmount)||Math.round(receiptAmount*100)!==Math.round(Number(booking.payment_amount_due)*100)){
-    return await declineAndReturn('Payment amount does not match required amount.');
-   }
-   let acceptedReceiptOcr;
-   try{acceptedReceiptOcr=await recognizeReceipt(receiptPath);}catch{
-    throw httpError('The receipt could not be verified from the uploaded image. Keep this booking pending for manual review.',422);
-   }
-   const acceptedReceiptSignals=validateReceiptSignals({
-    ocr:acceptedReceiptOcr,
-    requiredAmount:booking.payment_amount_due,
-    selectedMethod:qrRows[0].label,
-    expectedAccountName:qrRows[0].account_name,
-    expectedAccountNumber:qrRows[0].account_number,
-    submittedPaymentNumber:booking.payment_number,
-    submittedReference:booking.payment_reference_number,
-    latestAllowedDate,
-   });
-   if(acceptedReceiptSignals.declineReason)return await declineAndReturn(acceptedReceiptSignals.declineReason);
-   const receiptProvider=acceptedReceiptSignals.detectedProvider;
-   const selectedReceiptProvider=classifyPaymentProvider(qrRows[0].label);
-   const submittedReference=String(booking.payment_reference_number||'').trim().toLowerCase();
-   const scannedReference=String(acceptedReceiptSignals.extractedReference||'').trim().toLowerCase();
-   if(acceptedReceiptOcr.status!=='successful'||!acceptedReceiptSignals.amount||!scannedReference
-       ||!submittedReference||scannedReference!==submittedReference
-       ||!receiptProvider||!selectedReceiptProvider||receiptProvider!==selectedReceiptProvider){
-    return await declineAndReturn('The uploaded image does not show a completed payment receipt with a verifiable amount and transaction reference.');
-   }
-   const detectedProvider=classifyPaymentProvider(booking.payment_proof_ocr_provider);
-   const selectedProvider=classifyPaymentProvider(qrRows[0].label);
-   if(detectedProvider&&selectedProvider&&detectedProvider!==selectedProvider){
-    return await declineAndReturn('Payment method does not match selected payment method.');
-   }
-   if(!/^\d{4}-\d{2}-\d{2}$/.test(receiptDate)){
-    throw httpError('The receipt date could not be verified. Keep this booking pending for manual review.',422);
-   }
-   if(!isReceiptDateToday(receiptDate,latestAllowedDate))return await declineAndReturn(invalidDateReason);
-   try{validateRequiredBookingPayment(booking);}catch{return await declineAndReturn('Invalid payment/reference information.');}
-   if(booking.payment_proof_ocr_reference&&String(booking.payment_reference_number||'').trim().toLowerCase()!==String(booking.payment_proof_ocr_reference).trim().toLowerCase()){
-    return await declineAndReturn('Invalid payment/reference information.');
-   }
-  await connection.query("UPDATE bookings SET status='confirmed',approved_by=?,approved_at=NOW(),payment_status='paid',updated_date=NOW() WHERE id=? AND status='pending'",[String(req.user.id||'').slice(0,64),booking.id]);
-  await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Administrator','Booking accepted and payment verified','Booking',booking.id,`Accepted ${booking.booking_reference} and verified the submitted ${booking.payment_mode||booking.payment_qr_code_label} proof for ${Number(booking.payment_amount_due).toFixed(2)}.`]);
+   if(booking.payment_status!=='pending_verification')throw httpError('Only bookings with a submitted payment proof can be accepted.',422);
+   if(!String(booking.payment_mode||booking.payment_qr_code_label||'').trim())throw httpError('The booking payment method is missing.',422);
+   const [qrRows]=await connection.query('SELECT id FROM payment_qr_codes WHERE id=? LIMIT 1',[booking.payment_qr_code_id]);
+   if(!qrRows[0])throw httpError('The selected payment method is unavailable.',422);
+   validateRequiredBookingPayment(booking);
+  await connection.query("UPDATE bookings SET status='confirmed',approved_by=?,approved_at=NOW(),payment_status='paid',payment_proof_review='verified',rejection_reason=NULL,updated_date=NOW() WHERE id=? AND status='pending'",[String(req.user.id||'').slice(0,64),booking.id]);
+  await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Administrator','Booking accepted and payment manually verified','Booking',booking.id,`Accepted ${booking.booking_reference} and manually verified the submitted ${booking.payment_mode||booking.payment_qr_code_label} proof for ${Number(booking.payment_amount_due).toFixed(2)}.`]);
   const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);
   await connection.commit();
   transactionStarted=false;
