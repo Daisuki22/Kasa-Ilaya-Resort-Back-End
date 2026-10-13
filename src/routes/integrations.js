@@ -10,7 +10,7 @@ const { auth } = require('../middleware/auth');
 const { isAdmin } = require('../utils');
 const config = require('../config/env');
 const { createPaymentProofUploadToken } = require('../services/paymentProofUpload');
-const { createEmptyReceiptOcr, recognizeReceipt, MIN_CONFIDENT_VERIFICATION } = require('../services/receiptOcr');
+const { createEmptyReceiptOcr, recognizeReceipt, MIN_CONFIDENT_MISMATCH } = require('../services/receiptOcr');
 const { MAX_PAYMENT_RECEIPT_BYTES, isValidPaymentReceiptImage } = require('../services/paymentReceiptFile');
 const { validateReceiptSignals } = require('../services/receiptValidation');
 const { getTodayManilaDate } = require('../services/bookingSchedule');
@@ -103,9 +103,9 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
           amount_currency: ocr.amountCurrency,
           php_equivalent: ocr.phpEquivalent,
           payment_number: ocr.paymentNumber,
-          autofill_payment_number: Number(ocr.confidence) >= MIN_CONFIDENT_VERIFICATION && Boolean(ocr.paymentNumber),
+          autofill_payment_number: Number(ocr.confidence) >= MIN_CONFIDENT_MISMATCH && String(ocr.paymentNumber || '').trim().length >= 5,
           reference: ocr.reference,
-          autofill_reference: Number(ocr.confidence) >= MIN_CONFIDENT_VERIFICATION && Boolean(ocr.reference),
+          autofill_reference: Number(ocr.confidence) >= MIN_CONFIDENT_MISMATCH && String(ocr.reference || '').trim().length >= 4,
           date: ocr.date,
           confidence: ocr.confidence,
           status: ocr.status,

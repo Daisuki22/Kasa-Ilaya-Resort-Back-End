@@ -119,7 +119,7 @@ const extractReference = (text) => {
 };
 
 const extractPaymentNumber = (text) => {
-  const match = String(text || '').match(/\b(?:account|wallet|mobile|phone|payment)\s*(?:no\.?|number|#)\s*[:#=-]?\s*([+()\d][+()\d\s.-]{4,31})/i);
+  const match = String(text || '').match(/\b(?:account|wallet|mobile|phone|payment)\s*(?:no\.?|number|#)\s*[:#=-]?\s*([+()\d][+()\d .-]{4,31})/i);
   if (!match) return null;
   const value = match[1].trim().replace(/\s+/g, ' ').slice(0, 64);
   return value.replace(/[\u0000-\u001f\u007f]/g, '') || null;
