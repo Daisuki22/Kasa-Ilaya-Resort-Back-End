@@ -711,6 +711,11 @@ async function validateBookingSubmission(record,db=pool,proofToken=null,userId=n
   if(signals.notReceipt)throw httpError(signals.declineReason,422);
   if(signals.paymentNumber)record.payment_number=signals.paymentNumber;
   if(signals.paymentReference)record.payment_reference_number=signals.paymentReference;
+  let duplicateReceipt=false;
+  if(record.payment_proof_fingerprint){
+   const [duplicates]=await db.query('SELECT id FROM bookings WHERE payment_proof_fingerprint=? AND id<>? LIMIT 1',[record.payment_proof_fingerprint,record.id]);
+   duplicateReceipt=duplicates.length>0;
+  }
   let duplicateReference=false;
   if(signals.paymentReference){
    const [duplicates]=await db.query('SELECT id FROM bookings WHERE LOWER(payment_reference_number)=LOWER(?) OR LOWER(payment_proof_ocr_reference)=LOWER(?) LIMIT 1',[signals.paymentReference,signals.paymentReference]);
@@ -727,14 +732,13 @@ async function validateBookingSubmission(record,db=pool,proofToken=null,userId=n
   record.payment_proof_ocr_reference=signals.extractedReference;
   record.payment_proof_ocr_date=signals.date;
   record.payment_proof_ocr_confidence=signals.confidence;
-  record.payment_status=signals.declineReason||duplicateReference?'declined':'pending_verification';
-  if(signals.declineReason||duplicateReference){
+  record.payment_status=signals.declineReason||duplicateReceipt||duplicateReference?'declined':'pending_verification';
+  if(signals.declineReason||duplicateReceipt||duplicateReference){
    record.status='rejected';
    record.rejected_at=now();
-   record.rejection_reason=signals.declineReason||'Invalid payment/reference information.';
+   record.rejection_reason=signals.declineReason
+    ||(duplicateReceipt?'This exact receipt image has already been submitted for another booking.':'This transaction reference has already been used for another booking.');
    record.payment_proof_review='auto_declined';
-  }else if(record.payment_proof_review==='duplicate_needs_review'){
-   record.payment_proof_review='duplicate_needs_review';
   }else{
    record.payment_proof_review=successfulSignals?'verified':'needs_manual_review';
   }

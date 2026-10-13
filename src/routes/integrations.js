@@ -115,8 +115,11 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
           recognition_failed: Boolean(ocr.recognitionFailed),
           duplicate_image: duplicateFiles.length > 0,
         };
-        let validation = 'pending_review';
-        let message = 'Receipt content was scanned for review signals. An authorized admin still needs to verify the original proof.';
+        const isDuplicateImage = duplicateFiles.length > 0;
+        let validation = isDuplicateImage ? 'duplicate' : 'pending_review';
+        let message = isDuplicateImage
+          ? 'This exact receipt image has already been submitted for another booking. Upload your own completed payment receipt.'
+          : 'Receipt content was scanned for review signals. An authorized admin still needs to verify the original proof.';
         const selectedQrCodeId = String(req.body.payment_qr_code_id || '').trim();
         if (selectedQrCodeId) {
           const [methods] = await pool.query(
@@ -137,7 +140,7 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
             submittedReference: req.body.payment_reference_number,
             latestAllowedDate: getTodayManilaDate(),
           });
-          if (signals.declineReason) {
+          if (!isDuplicateImage && signals.declineReason) {
             validation = 'declined';
             message = signals.declineReason;
           }
