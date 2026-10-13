@@ -114,15 +114,33 @@ const extractDate = (text) => {
 };
 
 const extractReference = (text) => {
-  const match = String(text || '').match(/\b(?:reference(?:\s*(?:no\.?|number|#))?|ref(?:\s*(?:no\.?|#))?|transaction(?:\s*(?:id|no\.?|number|#))?|trace(?:\s*(?:no\.?|number|#))?)\s*[:#=-]?\s*([A-Z0-9][A-Z0-9-]{4,39})/i);
+  const match = String(text || '').match(/\b(?:payment\s+reference|transaction\s+reference|reference(?:\s*(?:no\.?|number|#))?|ref(?:erence)?(?:\s*(?:no\.?|number|#))?|transaction(?:\s*(?:id|no\.?|number|#))?|trace(?:\s*(?:no\.?|number|#))?)\s*[:#=-]?\s*([A-Z0-9][A-Z0-9-]{4,39})/i);
   return match ? match[1].toUpperCase() : null;
 };
 
+const isPhilippineMobileNumber = (value) => {
+  const digits = String(value || '').replace(/\D/g, '');
+  return (digits.length === 11 && digits.startsWith('09'))
+    || (digits.length === 12 && digits.startsWith('639'));
+};
+
 const extractPaymentNumber = (text) => {
-  const match = String(text || '').match(/\b(?:account|wallet|mobile|phone|payment)\s*(?:no\.?|number|#)\s*[:#=-]?\s*([+()\d][+()\d .-]{4,31})/i);
-  if (!match) return null;
-  const value = match[1].trim().replace(/\s+/g, ' ').slice(0, 64);
-  return value.replace(/[\u0000-\u001f\u007f]/g, '') || null;
+  const source = String(text || '');
+  const labeled = source.match(/\b(?:(?:gcash|sender|payment|account|wallet|mobile|phone)\s*(?:account\s*)?(?:no\.?|number|#)|(?:sent|paid)\s+from)\s*[:#=-]?\s*([+()\d][+()\d .-]{4,31})/i);
+  if (labeled) {
+    const value = labeled[1].trim().replace(/\s+/g, ' ').slice(0, 64);
+    if (value.replace(/\D/g, '').length >= 5) return value.replace(/[\u0000-\u001f\u007f]/g, '') || null;
+  }
+
+  // GCash receipts often print a mobile number without a "Payment Number" label.
+  // Restrict this fallback to Philippine mobile number shapes to avoid grabbing
+  // amounts, dates, or the transaction reference as the payer number.
+  const phonePattern = /(?:\+?63|0)(?:[\s().-]*\d){9,10}/g;
+  for (const match of source.matchAll(phonePattern)) {
+    const value = match[0].trim().replace(/\s+/g, ' ').slice(0, 32);
+    if (isPhilippineMobileNumber(value)) return value;
+  }
+  return null;
 };
 
 const extractParty = (text, labelPattern) => {
