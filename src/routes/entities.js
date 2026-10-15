@@ -379,14 +379,26 @@ async function acceptBooking(req,res){
    const booking=rows[0];
    if(!booking)throw httpError('Reservation not found.',404);
    if(booking.status!=='pending')throw httpError('Only pending bookings can be accepted.',409);
+   const [packageRows]=await connection.query('SELECT name,price,day_tour_price,night_tour_price,twenty_two_hour_price FROM packages WHERE id=? LIMIT 1 FOR UPDATE',[booking.package_id]);
+   if(!packageRows[0])throw httpError('The package price could not be verified. Do not accept this payment until the booking is reviewed.',422);
+   const currentQuote=quoteBooking({packageRecord:packageRows[0],tourType:booking.tour_type,guestCount:booking.guest_count,paymentType:booking.payment_type||'downpayment'});
+   if(Math.round(Number(booking.total_amount)*100)!==Math.round(currentQuote.total_amount*100)
+    ||Math.round(Number(booking.payment_amount_due)*100)!==Math.round(currentQuote.payment_amount_due*100)){
+    throw httpError('The booking fee has changed since this reservation was submitted. Do not accept this receipt; request an updated payment for the current fee.',409);
+   }
    const bookingEndTime=getBookingEndDateTime(booking.booking_date_key,booking.tour_type);
    if(!bookingEndTime||bookingEndTime<=new Date())throw httpError('This booking can no longer be accepted because its checkout time has passed.',409);
    const receiptImage=await getUploadedReceiptBuffer(booking.receipt_url,connection);
    if(!receiptImage)throw httpError('A valid payment receipt is required before accepting this booking.',422);
    if(booking.payment_status!=='pending_verification')throw httpError('Only bookings with a submitted payment proof can be accepted.',422);
    if(!String(booking.payment_mode||booking.payment_qr_code_label||'').trim())throw httpError('The booking payment method is missing.',422);
-   const [qrRows]=await connection.query('SELECT id FROM payment_qr_codes WHERE id=? LIMIT 1',[booking.payment_qr_code_id]);
-   if(!qrRows[0])throw httpError('The selected payment method is unavailable.',422);
+   const [qrRows]=await connection.query('SELECT id,label,is_active FROM payment_qr_codes WHERE id=? LIMIT 1 FOR UPDATE',[booking.payment_qr_code_id]);
+   if(!qrRows[0]||!qrRows[0].is_active)throw httpError('The selected payment method is no longer active. Do not accept this receipt.',422);
+   const receiptProvider=classifyPaymentProvider(booking.payment_proof_ocr_provider);
+   const selectedProvider=classifyPaymentProvider(qrRows[0].label);
+   if(receiptProvider&&selectedProvider&&receiptProvider!==selectedProvider){
+    throw httpError('The receipt payment provider does not match the selected resort payment method. Do not accept this receipt.',422);
+   }
    if(!Number.isFinite(Number(booking.payment_amount_due))||Number(booking.payment_amount_due)<=0)throw httpError('A valid payment amount is required before accepting this booking.',422);
    const receiptDate=booking.payment_proof_ocr_date instanceof Date
     ?booking.payment_proof_ocr_date.toISOString().slice(0,10)
@@ -395,7 +407,7 @@ async function acceptBooking(req,res){
    if(receiptDate!==getTodayManilaDate())throw httpError('Receipt is outdated. Only receipts dated today are accepted.',422);
    const receiptAmount=Number(booking.payment_proof_ocr_amount);
    if(!Number.isFinite(receiptAmount)||receiptAmount<=0)throw httpError('The receipt amount could not be verified. Upload a receipt showing the current booking fee.',422);
-   if(Math.round(receiptAmount*100)!==Math.round(Number(booking.payment_amount_due)*100)){
+   if(Math.round(receiptAmount*100)!==Math.round(currentQuote.payment_amount_due*100)){
     throw httpError('Payment amount does not match the booking fee. An updated receipt is required.',422);
    }
   await connection.query("UPDATE bookings SET status='confirmed',approved_by=?,approved_at=NOW(),payment_status='paid',payment_proof_review='verified',rejection_reason=NULL,updated_date=NOW() WHERE id=? AND status='pending'",[String(req.user.id||'').slice(0,64),booking.id]);
