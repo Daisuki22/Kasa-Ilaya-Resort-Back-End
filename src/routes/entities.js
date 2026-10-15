@@ -376,10 +376,12 @@ async function acceptBooking(req,res){
   connection=await pool.getConnection();
   await connection.beginTransaction();
   transactionStarted=true;
-   const [rows]=await connection.query('SELECT * FROM bookings WHERE id=? FOR UPDATE',[bookingId]);
+   const [rows]=await connection.query("SELECT *,DATE_FORMAT(booking_date,'%Y-%m-%d') AS booking_date_key FROM bookings WHERE id=? FOR UPDATE",[bookingId]);
    const booking=rows[0];
    if(!booking)throw httpError('Reservation not found.',404);
    if(booking.status!=='pending')throw httpError('Only pending bookings can be accepted.',409);
+   const bookingEndTime=getBookingEndDateTime(booking.booking_date_key,booking.tour_type);
+   if(!bookingEndTime||bookingEndTime<=new Date())throw httpError('This booking can no longer be accepted because its checkout time has passed.',409);
    const receiptPath=uploadedReceiptPath(booking.receipt_url);
    if(!receiptPath)throw httpError('A valid payment receipt is required before accepting this booking.',422);
    if(booking.payment_status!=='pending_verification')throw httpError('Only bookings with a submitted payment proof can be accepted.',422);
