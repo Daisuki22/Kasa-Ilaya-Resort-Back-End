@@ -151,8 +151,8 @@ async function requestReschedule(req,res){
   if(body.booking_date<=today)throw httpError('Choose a future date for your reservation.',422);
   const originalStart=getBookingStartDateTime(originalDate,booking.tour_type);
   if(!originalStart)throw httpError('This reservation date cannot be checked.',422);
-  const rescheduleCutoff=originalStart.getTime()-5*24*60*60*1000;
-  if(Date.now()>=rescheduleCutoff)throw httpError('Reschedule requests are closed starting 5 days before the tour begins.',409);
+  const rescheduleCutoff=originalStart.getTime()-7*24*60*60*1000;
+  if(Date.now()>=rescheduleCutoff)throw httpError('Reschedule requests are closed starting 7 days before the tour begins.',409);
   if(!getBookingStartDateTime(body.booking_date,booking.tour_type)||!getTourTime(booking.tour_type))throw httpError('This reservation has an invalid tour schedule.',422);
   phase='validate_schedule_availability';
   if(!await databaseScheduleIsAvailable(connection,body.booking_date,booking.tour_type,booking.id,true))throw httpError('The selected schedule is unavailable. Please choose another date or time.',409,'BOOKING_SCHEDULE_UNAVAILABLE');
@@ -211,7 +211,7 @@ async function cancelBooking(req,res){
   if(!isBookingCancellationAllowed(booking,bookingDate)){
    const message=daysUntil<=0
     ?'Reservations on today or past dates cannot be cancelled online.'
-    :'Online cancellation is no longer available within 7 days of your reservation date. Reschedule requests close 5 days before the tour begins.';
+    :'Online cancellation is no longer available within 7 days of your reservation date. Reschedule requests close 7 days before the tour begins.';
    const error=httpError(message,400);
    error.code='CANCELLATION_NOT_ALLOWED';
    error.days_until_booking=daysUntil;
