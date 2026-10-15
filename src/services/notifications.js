@@ -120,7 +120,7 @@ async function sendBookingPolicyReminders() {
     const cancellationDate = new Intl.DateTimeFormat('en-PH', {
       timeZone: 'Asia/Manila', dateStyle: 'full',
     }).format(new Date(`${bookingDate}T00:00:00+08:00`));
-    const rescheduleCutoff = new Date(startTime.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const rescheduleCutoff = new Date(startTime.getTime() - 5 * 24 * 60 * 60 * 1000);
     const rescheduleDateTime = new Intl.DateTimeFormat('en-PH', {
       timeZone: 'Asia/Manila', dateStyle: 'full', timeStyle: 'short',
     }).format(rescheduleCutoff);
