@@ -29,6 +29,15 @@ async function ensurePaymentQrCodeImageCapacity(){
   if(dataType&&!['mediumtext','longtext'].includes(dataType))await pool.query('ALTER TABLE `payment_qr_codes` MODIFY COLUMN `image_url` MEDIUMTEXT NOT NULL');
 }
 async function ensureRuntimeSchema(){
+  if(!await tableExists('payment_proof_uploads')){
+    await pool.query(`CREATE TABLE payment_proof_uploads (
+      file_url VARCHAR(255) NOT NULL PRIMARY KEY,
+      mime_type VARCHAR(32) NOT NULL,
+      image_data MEDIUMBLOB NOT NULL,
+      created_at DATETIME NOT NULL,
+      KEY idx_payment_proof_uploads_created (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`);
+  }
   if(await tableExists('pending_registrations')&&!await indexExists('pending_registrations','pending_registrations_email_unique')){
     await pool.query('ALTER TABLE pending_registrations ADD UNIQUE KEY pending_registrations_email_unique (email)');
   }

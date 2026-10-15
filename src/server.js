@@ -3,6 +3,7 @@ const fs=require('node:fs');const path=require('node:path');
 const {randomUUID}=require('node:crypto');
 const config=require('./config/env');const {auth}=require('./middleware/auth');const {notFound,errorHandler}=require('./middleware/error');
 const {uploadsDir,bundledUploadsDir}=require('./config/uploads');
+const {pool}=require('./config/database');
 const health=require('./routes/health');const authRoutes=require('./routes/auth');const entities=require('./routes/entities');const inquiries=require('./routes/inquiries');const integrations=require('./routes/integrations');
 const {sendUpcomingBookingReminders,sendBookingPolicyReminders,sendPendingPaymentVerificationReminders}=require('./services/notifications');
 const {synchronizeBookingStatuses}=require('./services/bookingExpiration');
@@ -20,6 +21,20 @@ app.use((req,res,next)=>{
   return corsMiddleware(req,res,next);
 });
 app.use(express.json({limit:'10mb'}));app.use(express.urlencoded({extended:true,limit:'10mb'}));app.use(morgan(config.nodeEnv==='production'?'combined':'dev'));const staticImageCache={maxAge:'1y',immutable:true};app.use(['/uploads','/api/uploads'],preferWebp(uploadsDir),express.static(uploadsDir,staticImageCache),preferWebp(bundledUploadsDir),express.static(bundledUploadsDir,staticImageCache));
+app.use(['/uploads','/api/uploads'],async(req,res,next)=>{
+  if(!['GET','HEAD'].includes(req.method))return next();
+  try{
+    const relativePath=decodeURIComponent(String(req.url||'').split('?')[0]).replace(/^[/\\]+/,'');
+    const fileUrl=`/uploads/${relativePath}`;
+    const [rows]=await pool.query('SELECT mime_type,image_data FROM payment_proof_uploads WHERE file_url=? LIMIT 1',[fileUrl]);
+    if(!rows[0])return next();
+    res.setHeader('Content-Type',rows[0].mime_type);
+    res.setHeader('Cache-Control','private, max-age=300');
+    res.setHeader('X-Content-Type-Options','nosniff');
+    res.setHeader('Content-Length',rows[0].image_data.length);
+    return req.method==='HEAD'?res.end():res.end(rows[0].image_data);
+  }catch(error){return next(error);}
+});
 app.get('/',(req,res)=>res.json({success:true,service:'Kasa Ilaya Resort API',version:'2.0.0'}));app.use('/api/health',health);
 // New clean Node endpoints
 app.use('/api/auth', auth, authRoutes);app.use('/api/entities',entities);app.use('/api/inquiries',inquiries);app.use('/api/integrations',integrations);

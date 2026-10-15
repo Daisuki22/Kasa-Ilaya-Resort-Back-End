@@ -81,6 +81,10 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
       fs.renameSync(req.file.path, target);
       const fileUrl = `/uploads/${month}/${name}`;
       if (purpose === 'payment_receipt') {
+        await pool.query(
+          'INSERT INTO payment_proof_uploads (file_url,mime_type,image_data,created_at) VALUES (?,?,?,NOW())',
+          [fileUrl, req.file.mimetype, fs.readFileSync(target)]
+        );
         let ocr = createEmptyReceiptOcr();
         try {
           ocr = await recognizeReceipt(target);
@@ -109,6 +113,7 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
         }
         if (duplicateFiles.length || duplicateReference) {
           try { fs.unlinkSync(target); } catch {}
+          await pool.query('DELETE FROM payment_proof_uploads WHERE file_url=?', [fileUrl]);
           return res.json({
             validation: 'duplicate',
             message: duplicateFiles.length

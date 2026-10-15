@@ -381,8 +381,8 @@ async function acceptBooking(req,res){
    if(booking.status!=='pending')throw httpError('Only pending bookings can be accepted.',409);
    const bookingEndTime=getBookingEndDateTime(booking.booking_date_key,booking.tour_type);
    if(!bookingEndTime||bookingEndTime<=new Date())throw httpError('This booking can no longer be accepted because its checkout time has passed.',409);
-   const receiptPath=uploadedReceiptPath(booking.receipt_url);
-   if(!receiptPath)throw httpError('A valid payment receipt is required before accepting this booking.',422);
+   const receiptImage=await getUploadedReceiptBuffer(booking.receipt_url,connection);
+   if(!receiptImage)throw httpError('A valid payment receipt is required before accepting this booking.',422);
    if(booking.payment_status!=='pending_verification')throw httpError('Only bookings with a submitted payment proof can be accepted.',422);
    if(!String(booking.payment_mode||booking.payment_qr_code_label||'').trim())throw httpError('The booking payment method is missing.',422);
    const [qrRows]=await connection.query('SELECT id FROM payment_qr_codes WHERE id=? LIMIT 1',[booking.payment_qr_code_id]);
@@ -532,9 +532,9 @@ async function createBooking(req,res,next){
   record.payment_proof_review=record.receipt_url?'needs_manual_review':null;
   record.payment_proof_fingerprint=null;
   if(record.receipt_url){
-   const proofPath=uploadedReceiptPath(record.receipt_url);
-   if(proofPath){
-    record.payment_proof_fingerprint=createHash('sha256').update(fs.readFileSync(proofPath)).digest('hex');
+   const proofImage=await getUploadedReceiptBuffer(record.receipt_url,connection);
+   if(proofImage){
+    record.payment_proof_fingerprint=createHash('sha256').update(proofImage).digest('hex');
     stage='check_duplicate_payment_proof';
     const [duplicates]=await connection.query('SELECT id FROM bookings WHERE payment_proof_fingerprint=? LIMIT 1',[record.payment_proof_fingerprint]);
     if(duplicates.length)record.payment_proof_review='duplicate_needs_review';
@@ -716,7 +716,7 @@ async function validateBookingSubmission(record,db=pool,proofToken=null,userId=n
  if(!methods[0])throw httpError('The selected payment method is unavailable. Refresh the page and choose another method.',422);
   record.payment_qr_code_label=methods[0].label;
   record.payment_mode=methods[0].label;
- if(!String(record.receipt_url||'').trim()||!uploadedReceiptPath(record.receipt_url))throw httpError('Upload a valid payment proof image before submitting your booking.',422);
+ if(!String(record.receipt_url||'').trim()||!await getUploadedReceiptBuffer(record.receipt_url,db))throw httpError('Upload a valid payment proof image before submitting your booking.',422);
  const claims=getPaymentProofUploadClaims(proofToken,{userId,fileUrl:record.receipt_url,secret:process.env.JWT_SECRET});
  if(!claims)throw httpError('Upload a new payment proof using your signed-in account before submitting this booking.',403);
   const ocr=claims.ocr||createEmptyReceiptOcr();
@@ -791,6 +791,18 @@ if(method==='DELETE'){if(!admin)return res.status(403).json({error:'Forbidden.'}
 function cryptoRandom(n){return require('crypto').randomBytes(n).toString('hex').toUpperCase().slice(0,8);}
 function dateOnly(value){return value instanceof Date?value.toISOString().slice(0,10):String(value||'').slice(0,10);}
 function uploadedReceiptPath(receiptUrl){try{const pathname=new URL(String(receiptUrl||''),'http://local.invalid').pathname;const match=pathname.match(/(?:^|\/)uploads\/(.+)$/i);if(!match)return null;const relativePath=decodeURIComponent(match[1]);for(const rootDirectory of [uploadsDir,bundledUploadsDir]){const root=path.resolve(rootDirectory)+path.sep;const candidate=path.resolve(rootDirectory,relativePath);if(candidate.startsWith(root)&&fs.existsSync(candidate)&&fs.statSync(candidate).isFile())return candidate;}return null;}catch{return null;}}
+async function getUploadedReceiptBuffer(receiptUrl,db=pool){
+ const filePath=uploadedReceiptPath(receiptUrl);
+ if(filePath)return fs.readFileSync(filePath);
+ try{
+  const parsed=new URL(String(receiptUrl||''),'http://local.invalid');
+  const match=parsed.pathname.match(/(?:^|\/)uploads\/(.+)$/i);
+  if(!match)return null;
+  const fileUrl=`/uploads/${decodeURIComponent(match[1])}`;
+  const [rows]=await db.query('SELECT image_data FROM payment_proof_uploads WHERE file_url=? LIMIT 1',[fileUrl]);
+  return rows[0]?.image_data||null;
+ }catch{return null;}
+}
 async function notificationAction(req,res,next){if(String(req.query.entity||'')!=='Notification')return next();if(!req.user)return res.status(401).json({error:'Not authenticated.'});const email=String(req.user.email||'').toLowerCase();const action=String(req.query.action||'');if(req.method==='GET'&&action==='unread-count'){const [rows]=await pool.query('SELECT COUNT(*) AS count FROM notifications WHERE LOWER(user_email)=? AND is_read=0',[email]);return res.json({count:Number(rows[0]?.count||0)});}if(req.method==='PATCH'&&action==='mark-all-read'){const [result]=await pool.query('UPDATE notifications SET is_read=1 WHERE LOWER(user_email)=? AND is_read=0',[email]);return res.json({success:true,updated:Number(result.affectedRows||0)});}if(req.method==='PATCH'&&!action){const notificationId=String(req.query.id||'');if(!notificationId||Object.keys(req.body||{}).length!==1||req.body?.is_read!==true)return res.status(403).json({error:'Only marking your own notification as read is allowed.'});const [result]=await pool.query('UPDATE notifications SET is_read=1 WHERE id=? AND LOWER(user_email)=?',[notificationId,email]);if(!result.affectedRows)return res.status(404).json({error:'Notification not found.'});return res.json({id:notificationId,is_read:true});}if(req.method==='GET'&&!action)return next();return res.status(405).json({error:'Method not allowed.'});}
 async function bookingEventNotifications(req,res,next){if(String(req.query.entity||'')!=='Booking'||!['POST','PATCH','PUT'].includes(req.method))return next();const isCreate=req.method==='POST';let before=null;if(!isCreate){const bookingId=String(req.query.id||'');if(bookingId){const [rows]=await pool.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[bookingId]);before=rows[0]||null;}}const sendJson=res.json.bind(res);res.json=(payload)=>{const result=sendJson(payload);if(res.statusCode<400){const booking=isCreate?payload:(payload?.data||payload);if(booking?.id){void (async()=>{if(isCreate){const description=`${booking.booking_reference||booking.id} · ${booking.package_name||'Package'} · ${dateOnly(booking.booking_date)}`;await notifySafely({email:booking.customer_email,eventKey:`booking:${booking.id}:submitted`,title:'Your booking is pending confirmation',description,link:'/MyBookings',entityId:booking.id});await notifyBookingAdmins(booking);if(booking.payment_status==='pending_verification'){await notifyBookingAdmins(booking,{eventKey:`booking:${booking.id}:proof-submitted`,title:'Payment proof submitted',description:`${booking.booking_reference||booking.id} · ${booking.payment_mode||booking.payment_qr_code_label||'Payment method'} · Awaiting manual review.`});}return;}if(!before)return;const old=deserialize(MAP.Booking,before);if(old.status!==booking.status){await notifySafely({email:booking.customer_email,eventKey:`booking:${booking.id}:status:${old.status}:${booking.status}:${booking.updated_date}`,title:booking.status==='confirmed'?'Your booking has been confirmed':`Booking ${String(booking.status||'updated').replace(/_/g,' ')}`,description:`${booking.booking_reference||booking.id} · ${booking.package_name||'Booking'} on ${dateOnly(booking.booking_date)}.`,link:'/MyBookings',entityId:booking.id});}if(old.payment_status!==booking.payment_status){await notifySafely({email:booking.customer_email,eventKey:`booking:${booking.id}:payment:${old.payment_status}:${booking.payment_status}:${booking.updated_date}`,title:booking.payment_status==='paid'?'Payment verified':'Payment status updated',description:`${booking.booking_reference||booking.id} · ${String(booking.payment_status||'').replace(/_/g,' ')}.`,link:'/MyBookings',entityId:booking.id});}if(dateOnly(old.booking_date)!==dateOnly(booking.booking_date)){const summary=`${booking.booking_reference||booking.id} · Old date: ${dateOnly(old.booking_date)}. New date: ${dateOnly(booking.booking_date)}.`;await notifySafely({email:booking.customer_email,eventKey:`booking:${booking.id}:rescheduled:${dateOnly(booking.booking_date)}`,title:'Your booking schedule has been updated',description:summary,link:'/MyBookings',entityId:booking.id});await notifyBookingAdmins({...booking,customer_name:before.customer_name},{eventKey:`booking:${booking.id}:schedule:${dateOnly(booking.booking_date)}`,title:`Booking schedule updated`,description:summary});}if(old.rebooking_status!=='pending'&&booking.rebooking_status==='pending'){await notifyBookingAdmins({...booking,customer_name:before.customer_name},{eventKey:`booking:${booking.id}:reschedule-request:${dateOnly(booking.rebooking_requested_date||booking.booking_date)}`,title:'Reschedule request received',description:'A reschedule request was submitted. Review the booking in reservation management.'});}})().catch(error=>console.error('Booking notifications failed',{code:error.code,bookingId:booking.id}));}}return result;};return next();}
 router.use(auth,enforceBookingNotice,bookingCreationLock,blockPublicBookingEmailFilter,bookingEventNotifications,bookingAction,legalDocumentAction,notificationAction,handler); module.exports=router;
