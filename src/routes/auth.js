@@ -153,7 +153,7 @@ async function sendLoginNotification(user) {
       timeZone: 'Asia/Manila', dateStyle: 'long', timeStyle: 'short',
     }).format(new Date());
     const origin = String(config.frontendUrl || '').split(',')[0].trim().replace(/\/$/, '');
-    const accountUrl = origin ? `${origin}/Profile` : '/Profile';
+    const accountUrl = origin ? `${origin}/ProfileSettings` : '/ProfileSettings';
     const escapeHtml = (value) => String(value || '').replace(/[&<>"']/g, (character) => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
     })[character]);
