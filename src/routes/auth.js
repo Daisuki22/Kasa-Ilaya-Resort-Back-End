@@ -1816,6 +1816,7 @@ router.post('/', async (req, res, next) => {
         success: true,
         message:
           'If the account exists, a reset code has been sent.',
+        account_status: !user ? 'not_found' : user.password_hash ? 'password' : 'google_only',
         delivery_method: config.sampleResetOtp
           ? 'development'
           : 'email',
