@@ -21,8 +21,48 @@ const { isStrongPassword } = require('../services/passwordPolicy');
 
 const router = express.Router();
 const MAX_OTP_ATTEMPTS = 5;
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+const OTP_IP_WINDOW_MS = 60 * 60 * 1000;
+const OTP_IP_MAX_PER_HOUR = 10;
+const otpIpRequests = new Map();
 const PENDING_GOOGLE_SIGNUP_COOKIE = 'pending_google_signup';
 const PENDING_GOOGLE_SIGNUP_CSRF_COOKIE = 'pending_google_signup_csrf';
+
+function consumeOtpIpRequest(req, purpose) {
+  const ip = String(req.ip || req.socket?.remoteAddress || 'unknown').slice(0, 100);
+  const key = `${purpose}:${ip}`;
+  const cutoff = Date.now() - OTP_IP_WINDOW_MS;
+  const recent = (otpIpRequests.get(key) || []).filter((timestamp) => timestamp > cutoff);
+  const tooSoon = recent.length > 0 && Date.now() - recent[recent.length - 1] < OTP_RESEND_COOLDOWN_MS;
+  if (tooSoon || recent.length >= OTP_IP_MAX_PER_HOUR) {
+    otpIpRequests.set(key, recent);
+    return false;
+  }
+
+  recent.push(Date.now());
+  otpIpRequests.set(key, recent);
+  if (otpIpRequests.size > 10000) {
+    for (const [oldKey, timestamps] of otpIpRequests) {
+      if (!timestamps.length || timestamps[timestamps.length - 1] <= cutoff) otpIpRequests.delete(oldKey);
+      if (otpIpRequests.size <= 8000) break;
+    }
+  }
+  return true;
+}
+
+async function otpRecipientIsRateLimited(table, ownerColumn, ownerId) {
+  // Table and column are selected only from fixed call sites below.
+  const [rows] = await pool.query(
+    `SELECT COUNT(*) AS request_count,
+            TIMESTAMPDIFF(SECOND, MAX(created_date), UTC_TIMESTAMP()) AS seconds_since_last
+     FROM ${table}
+     WHERE ${ownerColumn}=? AND created_date >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 HOUR)`,
+    [ownerId]
+  );
+  const count = Number(rows[0]?.request_count || 0);
+  const elapsed = rows[0]?.seconds_since_last === null ? Infinity : Number(rows[0]?.seconds_since_last);
+  return count >= 5 || (count > 0 && elapsed < OTP_RESEND_COOLDOWN_MS / 1000);
+}
 
 const getTrustedFrontendOrigin = (req) => {
   const configuredOrigins = String(config.frontendUrl || '')
@@ -850,6 +890,13 @@ router.post('/', async (req, res, next) => {
         existingPendingRows[0]?.id ||
         id('pending');
 
+      if (!consumeOtpIpRequest(req, 'registration')) {
+        return res.status(429).json({ error: 'Please wait before requesting another verification code.' });
+      }
+      if (existingPendingRows[0] && await otpRecipientIsRateLimited('registration_otps', 'pending_registration_id', pendingId)) {
+        return res.status(429).json({ error: 'Please wait before requesting another verification code.' });
+      }
+
       if (existingPendingRows[0]) {
 
         await pool.query(
@@ -955,11 +1002,7 @@ router.post('/', async (req, res, next) => {
 
       /* Send email */
 
-      if (config.otpLogEnabled) {
-        console.warn(`[auth] Temporary registration OTP: ${otp}`);
-      }
-
-      const mail = config.sampleRegistrationOtp || config.otpLogEnabled
+      const mail = config.sampleRegistrationOtp
         ? { sent: true }
         : await sendMail(
         email,
@@ -998,7 +1041,7 @@ router.post('/', async (req, res, next) => {
           : null,
         delivery_method: config.sampleRegistrationOtp
           ? 'development'
-          : config.otpLogEnabled ? 'server_log' : 'email',
+          : 'email',
         verification_provider: 'server',
         sample_registration_otp: config.sampleRegistrationOtp || undefined
       });
@@ -1030,6 +1073,10 @@ router.post('/', async (req, res, next) => {
         });
       }
 
+      if (!consumeOtpIpRequest(req, 'registration')) {
+        return res.status(429).json({ error: 'Please wait before requesting another verification code.' });
+      }
+
       const [pendingRows] =
         await pool.query(
           `SELECT *
@@ -1046,6 +1093,10 @@ router.post('/', async (req, res, next) => {
           error:
             'No pending registration was found for this email address.'
         });
+      }
+
+      if (await otpRecipientIsRateLimited('registration_otps', 'pending_registration_id', pending.id)) {
+        return res.status(429).json({ error: 'Please wait before requesting another verification code.' });
       }
 
       const n = now();
@@ -1097,11 +1148,7 @@ router.post('/', async (req, res, next) => {
 
       /* Send OTP */
 
-      if (config.otpLogEnabled) {
-        console.warn(`[auth] Temporary registration OTP: ${otp}`);
-      }
-
-      const mail = config.sampleRegistrationOtp || config.otpLogEnabled
+      const mail = config.sampleRegistrationOtp
         ? { sent: true }
         : await sendMail(
         email,
@@ -1134,7 +1181,7 @@ router.post('/', async (req, res, next) => {
           : null,
         delivery_method: config.sampleRegistrationOtp
           ? 'development'
-          : config.otpLogEnabled ? 'server_log' : 'email',
+          : 'email',
         verification_provider: 'server',
         sample_registration_otp: config.sampleRegistrationOtp || undefined
       });
@@ -1588,10 +1635,12 @@ router.post('/', async (req, res, next) => {
         });
       }
 
+      const ipAllowed = consumeOtpIpRequest(req, 'password-reset');
+
       const user =
         await findUserByEmail(email);
 
-      if (user) {
+      if (user && ipAllowed && !(await otpRecipientIsRateLimited('password_reset_otps', 'user_id', user.id))) {
 
         const otp = config.sampleResetOtp || randomOtp();
         const n = now();
@@ -1633,11 +1682,7 @@ router.post('/', async (req, res, next) => {
           ]
         );
 
-        if (config.otpLogEnabled) {
-          console.warn(`[auth] Temporary password reset OTP: ${otp}`);
-        }
-
-        const mail = config.sampleResetOtp || config.otpLogEnabled
+        const mail = config.sampleResetOtp
           ? { sent: true }
           : await sendMail(
           user.email,
@@ -1655,12 +1700,6 @@ router.post('/', async (req, res, next) => {
           'reset'
         );
 
-        if (mail.sent === false) {
-          return res.status(502).json({
-            error: `Password reset email could not be sent. ${mail.error || 'Please check SMTP settings.'}`,
-            mail_sent: false
-          });
-        }
       }
 
       return res.json({
@@ -1669,7 +1708,7 @@ router.post('/', async (req, res, next) => {
           'If the account exists, a reset code has been sent.',
         delivery_method: config.sampleResetOtp
           ? 'development'
-          : config.otpLogEnabled ? 'server_log' : 'email',
+          : 'email',
         sample_reset_otp: user && config.sampleResetOtp ? config.sampleResetOtp : undefined
       });
     }

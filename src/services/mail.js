@@ -20,7 +20,8 @@ function publicMailError(error) {
     return 'Unable to connect to the SMTP server. Check KASA_SMTP_HOST and KASA_SMTP_PORT.';
   }
 
-  return error.message || 'Email delivery failed.';
+  // Do not return raw provider responses or SMTP server details to callers.
+  return 'Email delivery failed. Check the Brevo sender verification and transactional email status.';
 }
 
 function getTransporter() {
@@ -30,7 +31,7 @@ function getTransporter() {
     };
   }
 
-  if (!config.mail.host || !config.mail.port) {
+  if (!config.mail.host || !Number.isInteger(config.mail.port) || config.mail.port < 1 || config.mail.port > 65535) {
     return {
       error:
         'Mail server is not configured. Set KASA_SMTP_HOST and KASA_SMTP_PORT.'
@@ -44,10 +45,10 @@ function getTransporter() {
     };
   }
 
-  if (!config.mail.from) {
+  if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(config.mail.from)) {
     return {
       error:
-        'Sender email is not configured. Set KASA_MAIL_FROM_EMAIL.'
+        'A valid sender email is required. Set KASA_MAIL_FROM_EMAIL to a Brevo-verified sender address.'
     };
   }
 
