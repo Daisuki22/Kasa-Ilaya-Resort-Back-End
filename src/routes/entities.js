@@ -387,6 +387,16 @@ async function acceptBooking(req,res){
    const [qrRows]=await connection.query('SELECT id FROM payment_qr_codes WHERE id=? LIMIT 1',[booking.payment_qr_code_id]);
    if(!qrRows[0])throw httpError('The selected payment method is unavailable.',422);
    if(!Number.isFinite(Number(booking.payment_amount_due))||Number(booking.payment_amount_due)<=0)throw httpError('A valid payment amount is required before accepting this booking.',422);
+   const receiptDate=booking.payment_proof_ocr_date instanceof Date
+    ?booking.payment_proof_ocr_date.toISOString().slice(0,10)
+    :String(booking.payment_proof_ocr_date||'').slice(0,10);
+   if(!receiptDate)throw httpError('The receipt date could not be verified. Upload a receipt showing today’s date.',422);
+   if(receiptDate!==getTodayManilaDate())throw httpError('Receipt is outdated. Only receipts dated today are accepted.',422);
+   const receiptAmount=Number(booking.payment_proof_ocr_amount);
+   if(!Number.isFinite(receiptAmount)||receiptAmount<=0)throw httpError('The receipt amount could not be verified. Upload a receipt showing the current booking fee.',422);
+   if(Math.round(receiptAmount*100)!==Math.round(Number(booking.payment_amount_due)*100)){
+    throw httpError('Payment amount does not match the booking fee. An updated receipt is required.',422);
+   }
   await connection.query("UPDATE bookings SET status='confirmed',approved_by=?,approved_at=NOW(),payment_status='paid',payment_proof_review='verified',rejection_reason=NULL,updated_date=NOW() WHERE id=? AND status='pending'",[String(req.user.id||'').slice(0,64),booking.id]);
   await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Administrator','Booking accepted and payment manually verified','Booking',booking.id,`Accepted ${booking.booking_reference} and manually verified the submitted ${booking.payment_mode||booking.payment_qr_code_label} proof for ${Number(booking.payment_amount_due).toFixed(2)}.`]);
   const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);
