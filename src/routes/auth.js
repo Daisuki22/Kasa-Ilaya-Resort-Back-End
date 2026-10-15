@@ -145,6 +145,34 @@ async function recordAccountActivity(userId, eventType, description) {
   );
 }
 
+async function sendLoginNotification(user) {
+  try {
+    const [settings] = await pool.query('SELECT enable_login_notifications FROM site_settings LIMIT 1');
+    if (settings[0]?.enable_login_notifications === 0 || settings[0]?.enable_login_notifications === false) return;
+    const signedInAt = new Intl.DateTimeFormat('en-PH', {
+      timeZone: 'Asia/Manila', dateStyle: 'long', timeStyle: 'short',
+    }).format(new Date());
+    const origin = String(config.frontendUrl || '').split(',')[0].trim().replace(/\/$/, '');
+    const accountUrl = origin ? `${origin}/Profile` : '/Profile';
+    const escapeHtml = (value) => String(value || '').replace(/[&<>"']/g, (character) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[character]);
+    const result = await sendMail(
+      user.email,
+      'New sign-in to your Kasa Ilaya Resort account',
+      `<p>Hello ${escapeHtml(user.full_name || 'there')},</p>
+       <p>Your Kasa Ilaya Resort account was signed in successfully.</p>
+       <p><strong>Time:</strong> ${escapeHtml(signedInAt)} (Philippine time)</p>
+       <p>If this was you, no action is needed. If you don’t recognize this sign-in, please reset your password and contact the resort.</p>
+       <p><a href="${escapeHtml(accountUrl)}" style="display:inline-block;background:#0d5558;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:7px;font-weight:bold;">Review my account</a></p>`,
+      'login_notification'
+    );
+    if (!result.sent) console.error('Login notification email was not delivered', { userId: user.id, error: result.error });
+  } catch (error) {
+    console.error('Login notification could not be sent', { userId: user.id, code: error.code });
+  }
+}
+
 async function issue(res, user, req) {
   const sessionId = crypto.randomUUID();
   const createdAt = now();
@@ -487,6 +515,7 @@ router.post('/', async (req, res, next) => {
       }
 
       await issue(res, user, req);
+      void sendLoginNotification(user);
 
       return res.json({
         success: true,
@@ -741,6 +770,7 @@ router.post('/', async (req, res, next) => {
       }
 
       await issue(res, user, req);
+      void sendLoginNotification(user);
 
       if (isSignupCompletion) {
         res.clearCookie(PENDING_GOOGLE_SIGNUP_COOKIE, pendingGoogleCookieOptions());
@@ -1417,6 +1447,7 @@ router.post('/', async (req, res, next) => {
 
         if (user) {
           await issue(res, user, req);
+          void sendLoginNotification(user);
         }
 
         return res.json({

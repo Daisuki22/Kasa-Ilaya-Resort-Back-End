@@ -1,5 +1,6 @@
 const nodemailer = require('nodemailer');
 const config = require('../config/env');
+const { renderBrandedEmail } = require('./emailTemplate');
 
 let transporter = null;
 
@@ -95,7 +96,7 @@ async function sendMail(
       from: `"${config.mail.fromName || 'Kasa Ilaya Resort'}" <${config.mail.from}>`,
       to,
       subject,
-      html
+      html: renderBrandedEmail(subject, html)
     });
 
     console.log(
