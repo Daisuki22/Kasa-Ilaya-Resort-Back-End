@@ -163,10 +163,29 @@ async function sendBookingPolicyReminders() {
   }));
 }
 
+async function sendPendingPaymentVerificationReminders() {
+  const today = dateKeyFromDate(new Date());
+  const [bookings] = await pool.query(
+    `SELECT id, booking_reference, customer_name, package_name
+     FROM bookings
+     WHERE status='pending' AND payment_status='pending_verification'
+       AND created_date < DATE_SUB(NOW(), INTERVAL 1 DAY)`
+  );
+
+  await Promise.all(bookings.map((booking) => notifyBookingAdmins(booking, {
+    eventKey: `booking:${booking.id}:payment-verification-reminder:${today}`,
+    title: 'Payment verification is still pending',
+    description: `${booking.booking_reference || booking.id} · ${booking.customer_name || 'Guest'} · ${booking.package_name || 'Booking'} is still waiting for payment verification. Please review the submitted proof.`,
+  })));
+
+  return bookings.length;
+}
+
 module.exports = {
   createNotification,
   notifySafely,
   notifyBookingAdmins,
   sendUpcomingBookingReminders,
   sendBookingPolicyReminders,
+  sendPendingPaymentVerificationReminders,
 };

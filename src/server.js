@@ -4,7 +4,7 @@ const {randomUUID}=require('node:crypto');
 const config=require('./config/env');const {auth}=require('./middleware/auth');const {notFound,errorHandler}=require('./middleware/error');
 const {uploadsDir,bundledUploadsDir}=require('./config/uploads');
 const health=require('./routes/health');const authRoutes=require('./routes/auth');const entities=require('./routes/entities');const inquiries=require('./routes/inquiries');const integrations=require('./routes/integrations');
-const {sendUpcomingBookingReminders,sendBookingPolicyReminders}=require('./services/notifications');
+const {sendUpcomingBookingReminders,sendBookingPolicyReminders,sendPendingPaymentVerificationReminders}=require('./services/notifications');
 const {synchronizeBookingStatuses}=require('./services/bookingExpiration');
 const {ensureRuntimeSchema,ensureAccountSettingsSchema}=require('./config/database');
 const preferWebp=(root)=> (req,res,next)=>{if(!['GET','HEAD'].includes(req.method)||!String(req.headers.accept||'').includes('image/webp'))return next();try{const parsed=new URL(req.url,'http://local.invalid');const relativePath=decodeURIComponent(parsed.pathname).replace(/^[/\\]+/,'');const extension=path.extname(relativePath);if(!['.jpg','.jpeg','.png'].includes(extension.toLowerCase()))return next();const rootPath=path.resolve(root);const webpPath=path.resolve(rootPath,relativePath.slice(0,-extension.length)+'.webp');if(!webpPath.startsWith(rootPath+path.sep)||!fs.existsSync(webpPath)||!fs.statSync(webpPath).isFile())return next();req.url=`${parsed.pathname.slice(0,-extension.length)}.webp${parsed.search}`;res.vary('Accept');return next();}catch{return next();}};
@@ -41,10 +41,12 @@ startServer().catch((error)=>{
 const reminderTimer=setInterval(()=>{
   void sendUpcomingBookingReminders().catch(error=>console.error('Upcoming booking reminder check failed',{code:error.code}));
   void sendBookingPolicyReminders().catch(error=>console.error('Booking policy reminder check failed',{code:error.code}));
+  void sendPendingPaymentVerificationReminders().catch(error=>console.error('Pending payment verification reminder check failed',{code:error.code}));
 },15*60*1000);
 reminderTimer.unref();
 void sendUpcomingBookingReminders().catch(error=>console.error('Initial upcoming booking reminder check failed',{code:error.code}));
 void sendBookingPolicyReminders().catch(error=>console.error('Initial booking policy reminder check failed',{code:error.code}));
+void sendPendingPaymentVerificationReminders().catch(error=>console.error('Initial pending payment verification reminder check failed',{code:error.code}));
 const bookingExpirationTimer=setInterval(()=>{void synchronizeBookingStatuses().catch(error=>console.error('Booking status synchronization failed',{code:error.code,errno:error.errno,sqlState:error.sqlState}));},15*60*1000);
 bookingExpirationTimer.unref();
 void synchronizeBookingStatuses().catch(error=>console.error('Initial booking status synchronization failed',{code:error.code,errno:error.errno,sqlState:error.sqlState}));
