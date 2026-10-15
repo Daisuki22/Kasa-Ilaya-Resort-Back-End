@@ -25,6 +25,7 @@ const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
 const OTP_IP_WINDOW_MS = 60 * 60 * 1000;
 const OTP_IP_MAX_PER_HOUR = 10;
 const otpIpRequests = new Map();
+const DEVICE_ID_COOKIE = 'kasa_device_id';
 const PENDING_GOOGLE_SIGNUP_COOKIE = 'pending_google_signup';
 const PENDING_GOOGLE_SIGNUP_CSRF_COOKIE = 'pending_google_signup_csrf';
 
@@ -174,13 +175,32 @@ async function sendLoginNotification(user) {
 }
 
 async function issue(res, user, req) {
+  let deviceId = String(req?.cookies?.[DEVICE_ID_COOKIE] || '');
+  if (!/^[a-f0-9]{64}$/i.test(deviceId)) {
+    deviceId = crypto.randomBytes(32).toString('hex');
+    res.cookie?.(DEVICE_ID_COOKIE, deviceId, {
+      httpOnly: true,
+      secure: config.nodeEnv === 'production',
+      sameSite: config.nodeEnv === 'production' ? 'none' : 'lax',
+      path: '/api',
+      maxAge: 365 * 86400000
+    });
+  }
+  const deviceFingerprint = sha256(deviceId);
+  const [knownDevices] = await pool.query(
+    `SELECT id FROM auth_sessions
+     WHERE user_id=? AND device_fingerprint=?
+     LIMIT 1`,
+    [user.id, deviceFingerprint]
+  );
+  const isUnfamiliarDevice = !knownDevices[0];
   const sessionId = crypto.randomUUID();
   const createdAt = now();
   const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 19).replace('T', ' ');
   await pool.query(
-    `INSERT INTO auth_sessions (id,user_id,user_agent,created_at,last_seen_at,expires_at)
-     VALUES (?,?,?,?,?,?)`,
-    [sessionId, user.id, String(req?.get('user-agent') || '').slice(0, 512) || null, createdAt, createdAt, expiresAt]
+    `INSERT INTO auth_sessions (id,user_id,user_agent,device_fingerprint,created_at,last_seen_at,expires_at)
+     VALUES (?,?,?,?,?,?,?)`,
+    [sessionId, user.id, String(req?.get('user-agent') || '').slice(0, 512) || null, deviceFingerprint, createdAt, createdAt, expiresAt]
   );
   await recordAccountActivity(user.id, 'sign_in', 'Signed in successfully.');
   const token = jwt.sign(
@@ -204,7 +224,7 @@ async function issue(res, user, req) {
     maxAge: 7 * 86400000
   });
 
-  return token;
+  return { isUnfamiliarDevice };
 }
 
 /* =========================================================
@@ -593,8 +613,8 @@ router.post('/', async (req, res, next) => {
         });
       }
 
-      await issue(res, user, req);
-      void sendLoginNotification(user);
+      const { isUnfamiliarDevice } = await issue(res, user, req);
+      if (isUnfamiliarDevice) void sendLoginNotification(user);
 
       return res.json({
         success: true,
@@ -848,8 +868,8 @@ router.post('/', async (req, res, next) => {
         user = await findUserByEmail(email);
       }
 
-      await issue(res, user, req);
-      void sendLoginNotification(user);
+      const { isUnfamiliarDevice } = await issue(res, user, req);
+      if (isUnfamiliarDevice && !isSignupCompletion) void sendLoginNotification(user);
 
       if (isSignupCompletion) {
         res.clearCookie(PENDING_GOOGLE_SIGNUP_COOKIE, pendingGoogleCookieOptions());
@@ -1526,7 +1546,6 @@ router.post('/', async (req, res, next) => {
 
         if (user) {
           await issue(res, user, req);
-          void sendLoginNotification(user);
         }
 
         return res.json({

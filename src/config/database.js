@@ -92,8 +92,12 @@ async function ensureAccountSettingsSchema(){
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`);
   }
   await addColumnIfMissing('auth_sessions','token_fingerprint','token_fingerprint CHAR(64) NULL');
+  await addColumnIfMissing('auth_sessions','device_fingerprint','device_fingerprint CHAR(64) NULL AFTER user_agent');
   if(!await indexExists('auth_sessions','idx_auth_sessions_token_fingerprint')){
     await pool.query('ALTER TABLE auth_sessions ADD UNIQUE KEY idx_auth_sessions_token_fingerprint (token_fingerprint)');
+  }
+  if(!await indexExists('auth_sessions','idx_auth_sessions_user_device')){
+    await pool.query('ALTER TABLE auth_sessions ADD KEY idx_auth_sessions_user_device (user_id, device_fingerprint)');
   }
   if(!await tableExists('account_activity')){
     await pool.query(`CREATE TABLE account_activity (
