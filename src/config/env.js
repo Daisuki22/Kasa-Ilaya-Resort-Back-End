@@ -11,7 +11,7 @@ const googleClientId = process.env.KASA_GOOGLE_CLIENT_ID
 const mail = {
   enabled: /^(1|true|yes)$/i.test(process.env.KASA_MAIL_ENABLED || 'false'),
   host: process.env.KASA_SMTP_HOST || 'smtp-relay.brevo.com',
-  port: Number(process.env.KASA_SMTP_PORT || 587),
+  port: Number(process.env.KASA_SMTP_PORT || 2525),
   user: process.env.KASA_SMTP_USER || '',
   pass: process.env.KASA_SMTP_PASS || '',
   from: process.env.KASA_MAIL_FROM_EMAIL || '',

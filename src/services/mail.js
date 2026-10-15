@@ -57,7 +57,7 @@ function getTransporter() {
       host: config.mail.host,
       port: Number(config.mail.port),
 
-      // Brevo SMTP port 587 uses STARTTLS
+      // Brevo SMTP port 2525 uses STARTTLS and is available on Render Free.
       secure: false,
       requireTLS: true,
       connectionTimeout: 15000,
