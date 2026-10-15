@@ -74,7 +74,7 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
 
       const month = new Date().toISOString().slice(0, 7).replace('-', '/');
       const directory = path.join(uploadsDir, month);
-      const uploadPrefix = purpose === 'profile_image' ? 'profile' : purpose === 'review_image' ? 'review' : 'upload';
+      const uploadPrefix = purpose === 'profile_image' ? 'profile' : purpose === 'review_image' ? 'review' : purpose === 'damage_fee_image' ? 'damage' : 'upload';
       const name = `${uploadPrefix}_${randomBytes(16).toString('hex')}${extension}`;
       const target = path.join(directory, name);
       fs.mkdirSync(directory, { recursive: true });
