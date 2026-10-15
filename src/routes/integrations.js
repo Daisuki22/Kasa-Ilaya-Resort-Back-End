@@ -80,11 +80,13 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
       fs.mkdirSync(directory, { recursive: true });
       fs.renameSync(req.file.path, target);
       const fileUrl = `/uploads/${month}/${name}`;
-      if (purpose === 'payment_receipt') {
+      if (purpose === 'payment_receipt' || purpose === 'review_image') {
         await pool.query(
           'INSERT INTO payment_proof_uploads (file_url,mime_type,image_data,created_at) VALUES (?,?,?,NOW())',
           [fileUrl, req.file.mimetype, fs.readFileSync(target)]
         );
+      }
+      if (purpose === 'payment_receipt') {
         let ocr = createEmptyReceiptOcr();
         try {
           ocr = await recognizeReceipt(target);
