@@ -4,13 +4,13 @@ const { id, now } = require('../utils');
 const { getBookingStartDateTime, dateKeyFromDate, addDateKeyDays, calendarDaysUntil } = require('./bookingSchedule');
 const { sendMail } = require('./mail');
 
-async function createNotification({ email, eventKey, title, description, link, entityId }) {
+async function createNotification({ email, eventKey, title, description, link, entityId, actorName, actorProfileImageUrl }) {
   if (!email || !eventKey) return false;
   const [result] = await pool.query(
     `INSERT IGNORE INTO notifications
-      (id, created_date, user_email, event_key, title, description, link, entity_type, entity_id, is_read)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'Booking', ?, 0)`,
-    [id('notification'), now(), String(email).toLowerCase(), eventKey, title, description, link, entityId]
+      (id, created_date, user_email, event_key, title, description, link, entity_type, entity_id, actor_name, actor_profile_image_url, is_read)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'Booking', ?, ?, ?, 0)`,
+    [id('notification'), now(), String(email).toLowerCase(), eventKey, title, description, link, entityId, actorName || 'Kasa Ilaya Resort', actorProfileImageUrl || null]
   );
   return Number(result.affectedRows) > 0;
 }
@@ -25,10 +25,18 @@ async function notifySafely(notification) {
 
 async function notifyBookingAdmins(booking, event = {}) {
   let admins;
+  let actor = null;
   try {
     [admins] = await pool.query(
       "SELECT email FROM users WHERE disabled=0 AND role IN ('admin','super_admin') AND email IS NOT NULL"
     );
+    if (booking.customer_email) {
+      const [actors] = await pool.query(
+        'SELECT full_name,profile_image_url FROM users WHERE LOWER(email)=LOWER(?) LIMIT 1',
+        [booking.customer_email]
+      );
+      actor = actors[0] || null;
+    }
   } catch (error) {
     console.error('Admin notification recipients could not be loaded', { code: error.code });
     return;
@@ -40,6 +48,8 @@ async function notifyBookingAdmins(booking, event = {}) {
     description: event.description || `${booking.booking_reference || booking.id} · ${booking.customer_name || 'Guest'} · ${booking.package_name || 'Package'} · ${booking.booking_date}`,
     link: `/AdminCalendar?bookingId=${encodeURIComponent(booking.id)}`,
     entityId: booking.id,
+    actorName: actor?.full_name || booking.customer_name || 'Guest',
+    actorProfileImageUrl: actor?.profile_image_url || null,
   })));
 }
 

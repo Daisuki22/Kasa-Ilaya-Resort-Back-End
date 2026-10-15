@@ -29,6 +29,16 @@ async function ensurePaymentQrCodeImageCapacity(){
   if(dataType&&!['mediumtext','longtext'].includes(dataType))await pool.query('ALTER TABLE `payment_qr_codes` MODIFY COLUMN `image_url` MEDIUMTEXT NOT NULL');
 }
 async function ensureRuntimeSchema(){
+  if(await tableExists('notifications')){
+    await addColumnIfMissing('notifications','actor_name','actor_name VARCHAR(191) NULL AFTER entity_id');
+    await addColumnIfMissing('notifications','actor_profile_image_url','actor_profile_image_url VARCHAR(1024) NULL AFTER actor_name');
+    await pool.query(`UPDATE notifications n
+      LEFT JOIN bookings b ON b.id=n.entity_id AND n.entity_type='Booking'
+      LEFT JOIN users u ON LOWER(u.email)=LOWER(b.customer_email)
+      SET n.actor_name=COALESCE(u.full_name,b.customer_name,'Guest'),
+          n.actor_profile_image_url=u.profile_image_url
+      WHERE n.entity_type='Booking' AND n.actor_name IS NULL AND n.entity_id IS NOT NULL`);
+  }
   if(!await tableExists('payment_proof_uploads')){
     await pool.query(`CREATE TABLE payment_proof_uploads (
       file_url VARCHAR(255) NOT NULL PRIMARY KEY,
