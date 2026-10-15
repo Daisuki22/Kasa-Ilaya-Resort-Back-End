@@ -462,6 +462,84 @@ router.post('/', async (req, res, next) => {
       return res.json({ success: true, revoked_count: result.affectedRows || 0 });
     }
 
+    if (action === 'admin-send-password-reset-link') {
+      if (!req.user) return res.status(401).json({ error: 'Not authenticated.' });
+      if ((req.user.role || req.user.app_role) !== 'super_admin') {
+        return res.status(403).json({ error: 'Only a super admin can send password reset links.' });
+      }
+
+      const userId = String(p.user_id || '').trim();
+      if (!userId) return res.status(422).json({ error: 'Choose a user account first.' });
+
+      const [users] = await pool.query(
+        'SELECT id,email,full_name,password_hash,disabled FROM users WHERE id=? LIMIT 1',
+        [userId]
+      );
+      const target = users[0];
+      if (!target || target.disabled) return res.status(404).json({ error: 'The active user account was not found.' });
+      if (!target.password_hash) {
+        return res.status(422).json({ error: 'This account uses Google sign-in. Its password must be managed through Google.' });
+      }
+
+      const origin = getTrustedFrontendOrigin(req);
+      if (!origin) return res.status(503).json({ error: 'The password reset link cannot be created because the frontend URL is not configured.' });
+      if (await otpRecipientIsRateLimited('password_reset_tokens', 'user_id', target.id)) {
+        return res.status(429).json({ error: 'A password reset link was sent recently. Please wait before sending another.' });
+      }
+
+      const token = crypto.randomBytes(32).toString('hex');
+      const createdAt = now();
+      const expiresAt = new Date(Date.now() + 900000).toISOString().slice(0, 19).replace('T', ' ');
+      await pool.query(
+        `INSERT INTO password_reset_tokens
+         (id,user_id,token_hash,purpose,attempts,created_date,expires_at)
+         VALUES (?,?,?,?,?,?,?)`,
+        [id('resettoken'), target.id, sha256(token), 'reset_authorization', 0, createdAt, expiresAt]
+      );
+
+      const resetUrl = new URL('/ResetPassword', origin);
+      resetUrl.searchParams.set('token', token);
+      const escapeHtml = (value) => String(value || '').replace(/[&<>"']/g, (character) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      })[character]);
+      const mail = await sendMail(
+        target.email,
+        'Reset your Kasa Ilaya Resort password',
+        `<p>Hello ${escapeHtml(target.full_name || 'there')},</p>
+         <p>A super admin requested a password reset link for your Kasa Ilaya Resort account.</p>
+         <p><a href="${escapeHtml(resetUrl.toString())}" style="display:inline-block;background:#0d5558;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:7px;font-weight:bold;">Reset password</a></p>
+         <p>This link expires in 15 minutes and can be used once. If you did not expect this email, you can ignore it.</p>`,
+        'admin_password_reset'
+      );
+
+      if (!mail.sent) {
+        await pool.query(
+          'UPDATE password_reset_tokens SET used_at=? WHERE token_hash=? AND used_at IS NULL',
+          [now(), sha256(token)]
+        );
+        return res.status(502).json({ error: mail.error || 'Unable to send the password reset email.' });
+      }
+
+      await pool.query(
+        `UPDATE password_reset_tokens
+         SET used_at=?
+         WHERE user_id=? AND purpose='reset_authorization' AND used_at IS NULL AND token_hash<>?`,
+        [now(), target.id, sha256(token)]
+      );
+
+      try {
+        await pool.query(
+          `INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details)
+           VALUES (?,?,?,?,?,?,?,?,?)`,
+          [id('activitylog'), now(), now(), req.user.email || null, req.user.full_name || req.user.name || 'Super admin', 'Sent password reset link', 'User', target.id, `Sent a password reset link to ${target.email}.`]
+        );
+      } catch (error) {
+        console.error('Password reset link audit log failed', { userId: target.id, code: error.code });
+      }
+
+      return res.json({ success: true, email_sent: true });
+    }
+
     /* =====================================================
        LOGIN
     ===================================================== */
