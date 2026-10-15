@@ -431,8 +431,9 @@ async function rejectBooking(req,res){
   const booking=rows[0];
   if(!booking)throw httpError('Reservation not found.',404);
   if(booking.status!=='pending')throw httpError('Only pending bookings can be rejected.',409);
-  await connection.query("UPDATE bookings SET status='rejected',rejected_by=?,rejected_at=NOW(),rejection_reason=?,updated_date=NOW() WHERE id=? AND status='pending'",[String(req.user.id||'').slice(0,64),reason.slice(0,1000),booking.id]);
-  await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Administrator','Booking rejected','Booking',booking.id,`Rejected ${booking.booking_reference||booking.id}. Reason: ${reason.slice(0,800)}`]);
+  const hadPendingReschedule=booking.rebooking_status==='pending';
+  await connection.query("UPDATE bookings SET status='rejected',rejected_by=?,rejected_at=NOW(),rejection_reason=?,rebooking_resolved_at=IF(?=1,NOW(),rebooking_resolved_at),rebooking_resolution_note=IF(?=1,'Booking rejected; pending reschedule request closed.',rebooking_resolution_note),rebooking_status=IF(?=1,'declined',COALESCE(rebooking_status,'none')),updated_date=NOW() WHERE id=? AND status='pending'",[String(req.user.id||'').slice(0,64),reason.slice(0,1000),Number(hadPendingReschedule),Number(hadPendingReschedule),Number(hadPendingReschedule),booking.id]);
+  await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Administrator','Booking rejected','Booking',booking.id,`Rejected ${booking.booking_reference||booking.id}. Reason: ${reason.slice(0,800)}${hadPendingReschedule?' Pending reschedule request was closed.':''}`]);
   const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);
   await connection.commit();
   transactionStarted=false;
