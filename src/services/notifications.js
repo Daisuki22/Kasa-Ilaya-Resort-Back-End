@@ -1,7 +1,7 @@
 const { pool } = require('../config/database');
 const config = require('../config/env');
 const { id, now } = require('../utils');
-const { getBookingStartDateTime, dateKeyFromDate, addDateKeyDays } = require('./bookingSchedule');
+const { getBookingStartDateTime, dateKeyFromDate, addDateKeyDays, calendarDaysUntil } = require('./bookingSchedule');
 const { sendMail } = require('./mail');
 
 async function createNotification({ email, eventKey, title, description, link, entityId }) {
@@ -96,4 +96,77 @@ async function sendUpcomingBookingReminders() {
   }));
 }
 
-module.exports = { createNotification, notifySafely, notifyBookingAdmins, sendUpcomingBookingReminders };
+async function sendBookingPolicyReminders() {
+  const today = dateKeyFromDate(new Date());
+  const lastCancellationDay = addDateKeyDays(today, 8);
+  const rangeStart = addDateKeyDays(today, 7);
+  if (!lastCancellationDay || !rangeStart) return;
+
+  const [bookings] = await pool.query(
+    `SELECT id, booking_reference, customer_email, customer_name, package_name,
+            DATE_FORMAT(booking_date,'%Y-%m-%d') AS booking_date, tour_type,
+            rebooking_count, rebooking_status
+     FROM bookings
+     WHERE booking_date BETWEEN ? AND ? AND status IN ('pending','confirmed')`,
+    [rangeStart, lastCancellationDay]
+  );
+
+  await Promise.all(bookings.map(async (booking) => {
+    const bookingDate = String(booking.booking_date || '').slice(0, 10);
+    if (calendarDaysUntil(bookingDate, today) !== 8 || !booking.customer_email) return;
+    const startTime = getBookingStartDateTime(bookingDate, booking.tour_type);
+    if (!startTime) return;
+
+    const cancellationDate = new Intl.DateTimeFormat('en-PH', {
+      timeZone: 'Asia/Manila', dateStyle: 'full',
+    }).format(new Date(`${bookingDate}T00:00:00+08:00`));
+    const rescheduleCutoff = new Date(startTime.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const rescheduleDateTime = new Intl.DateTimeFormat('en-PH', {
+      timeZone: 'Asia/Manila', dateStyle: 'full', timeStyle: 'short',
+    }).format(rescheduleCutoff);
+    const origin = String(config.frontendUrl || '').split(',')[0].trim().replace(/\/$/, '');
+    const bookingsUrl = origin ? `${origin}/MyBookings` : '/MyBookings';
+    const reference = escapeHtml(booking.booking_reference || booking.id);
+    const alreadyRescheduled = Number(booking.rebooking_count || 0) >= 1;
+    const reschedulePending = String(booking.rebooking_status || 'none') === 'pending';
+    const rescheduleMessage = alreadyRescheduled
+      ? '<p>Your one allowed reschedule request has already been used.</p>'
+      : reschedulePending
+        ? '<p>You already have a reschedule request awaiting resort review. The original booking remains active until it is approved.</p>'
+        : `<p>You may submit one reschedule request by <strong>${escapeHtml(rescheduleDateTime)} Philippine time</strong>. Requests are subject to schedule availability and resort approval.</p>`;
+
+    const eventKey = `booking:${booking.id}:policy-deadline:${bookingDate}`;
+    const inserted = await createNotification({
+      email: booking.customer_email,
+      eventKey,
+      title: 'Booking cancellation and reschedule deadline',
+      description: `Today is the last day to cancel booking ${reference} online. Reschedule deadline: ${rescheduleDateTime} Philippine time.`,
+      link: '/MyBookings',
+      entityId: booking.id,
+    });
+    if (!inserted) return;
+
+    const result = await sendMail(
+      booking.customer_email,
+      'Action needed: booking change deadlines are approaching',
+      `<p>Hello ${escapeHtml(booking.customer_name || 'Guest')},</p>
+       <p>This is a reminder about the cancellation and rescheduling rules for your active booking.</p>
+       <p><strong>Booking reference:</strong> ${reference}<br>
+       <strong>Package:</strong> ${escapeHtml(booking.package_name || 'Resort booking')}<br>
+       <strong>Reservation date:</strong> ${escapeHtml(cancellationDate)}</p>
+       <p><strong>Cancellation:</strong> Today is the last calendar day you can cancel online. Cancellation is unavailable once the reservation is 7 calendar days away. Payments remain non-refundable under the resort policy.</p>
+       ${rescheduleMessage}
+       <p><a href="${escapeHtml(bookingsUrl)}" style="display:inline-block;background:#0d5558;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:7px;font-weight:bold;">View my booking</a></p>`,
+      'booking_policy_deadline'
+    );
+    if (!result.sent) console.error('Booking policy reminder email was not delivered', { bookingId: booking.id, error: result.error });
+  }));
+}
+
+module.exports = {
+  createNotification,
+  notifySafely,
+  notifyBookingAdmins,
+  sendUpcomingBookingReminders,
+  sendBookingPolicyReminders,
+};
