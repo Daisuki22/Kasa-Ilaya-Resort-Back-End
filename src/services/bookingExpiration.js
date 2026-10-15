@@ -14,13 +14,12 @@ async function synchronizeBookingStatuses() {
     await connection.beginTransaction();
     transactionStarted = true;
     const [rows] = await connection.query(
-      "SELECT id,booking_reference,customer_email,package_name,DATE_FORMAT(booking_date,'%Y-%m-%d') AS booking_date,tour_type FROM bookings WHERE status='pending' AND booking_date<=? FOR UPDATE",
+      "SELECT id,booking_reference,customer_email,package_name,DATE_FORMAT(booking_date,'%Y-%m-%d') AS booking_date,tour_type FROM bookings WHERE status='pending' AND booking_date<? FOR UPDATE",
       [today]
     );
     expired = rows.filter((booking) => {
       const bookingDate = String(booking.booking_date || '').slice(0, 10);
-      const endTime = getBookingEndDateTime(bookingDate, booking.tour_type);
-      return endTime && endTime <= currentTime;
+      return /^\d{4}-\d{2}-\d{2}$/.test(bookingDate) && bookingDate < today;
     });
     if (expired.length) {
       const placeholders = expired.map(() => '?').join(',');
