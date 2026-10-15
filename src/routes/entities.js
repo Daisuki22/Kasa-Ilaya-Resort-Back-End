@@ -655,6 +655,17 @@ async function bookingAction(req,res,next){
 }
 async function bookingCreationLock(req,res,next){const entity=String(req.query.entity||'');const bookingCreate=req.method==='POST'&&entity==='Booking';const manualScheduleWrite=entity==='UpcomingSchedule'&&(req.method==='POST'||(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'schedule_date')));if((!bookingCreate&&!manualScheduleWrite)||!req.user)return next();let connection;let acquired=false;let released=false;const release=async()=>{if(released||!connection)return;released=true;if(acquired)await releaseNamedLock(connection);connection.release();};try{connection=await pool.getConnection();const [rows]=await connection.query('SELECT GET_LOCK(?,10) AS acquired',[BOOKING_SCHEDULE_LOCK]);acquired=Number(rows[0]?.acquired)===1;if(!acquired){connection.release();console.warn('Booking schedule lock unavailable',{requestId:req.requestId,method:req.method,path:req.path,stage:'acquire_schedule_lock'});return res.status(503).json({error:'Schedule is busy. Please try again.',request_id:req.requestId});}res.once('finish',release);res.once('close',release);return next();}catch(error){if(connection&&!acquired)connection.release();return next(error);}}
 async function validate(entity,record,exclude,db=pool){
+ if(entity==='UpcomingSchedule'){
+  const scheduleDate=dateOnly(record.schedule_date);
+  if(!isValidDateKey(scheduleDate))throw httpError('Choose a valid schedule date.',422);
+  if(!String(record.title||'').trim())throw httpError('Schedule title is required.',422);
+  const previousDate=addDateKeyDays(scheduleDate,-1);
+  const statusSlots=ACTIVE_BOOKING_STATUSES.map(()=>'?').join(',');
+  const [bookings]=await db.query(`SELECT id FROM bookings WHERE status IN (${statusSlots}) AND (booking_date=? OR (tour_type IN ('night_tour','22_hours') AND booking_date=?)) LIMIT 1`,[...ACTIVE_BOOKING_STATUSES,scheduleDate,previousDate]);
+  if(bookings.length)throw httpError('A booking already occupies this date. Choose another date for the schedule.',409,'BOOKING_SCHEDULE_UNAVAILABLE');
+  const [schedules]=await db.query('SELECT id FROM upcoming_schedules WHERE schedule_date=? AND id<>? LIMIT 1',[scheduleDate,exclude||'']);
+  if(schedules.length)throw httpError('A schedule already exists on this date. Choose another date.',409,'BOOKING_SCHEDULE_UNAVAILABLE');
+ }
  if(entity==='Package'){
   if(!String(record.name||'').trim())throw Object.assign(new Error('Package name is required.'),{status:422});
   const prices=['day_tour_price','night_tour_price','twenty_two_hour_price','price'].map(x=>Number(record[x]||0));
