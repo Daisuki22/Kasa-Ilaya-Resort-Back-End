@@ -405,6 +405,7 @@ router.get('/', async (req, res, next) => {
            AND t.used_at IS NULL
            AND t.expires_at>NOW()
            AND u.disabled=0
+           AND NULLIF(TRIM(u.password_hash), '') IS NOT NULL
          LIMIT 1`,
         [sha256(token)]
       );
@@ -1749,7 +1750,7 @@ router.post('/', async (req, res, next) => {
       const user =
         await findUserByEmail(email);
 
-      if (user && ipAllowed && !(await otpRecipientIsRateLimited('password_reset_otps', 'user_id', user.id))) {
+      if (user?.password_hash && ipAllowed && !(await otpRecipientIsRateLimited('password_reset_otps', 'user_id', user.id))) {
 
         const otp = config.sampleResetOtp || randomOtp();
         const n = now();
@@ -1818,7 +1819,7 @@ router.post('/', async (req, res, next) => {
         delivery_method: config.sampleResetOtp
           ? 'development'
           : 'email',
-        sample_reset_otp: user && config.sampleResetOtp ? config.sampleResetOtp : undefined
+        sample_reset_otp: user?.password_hash && config.sampleResetOtp ? config.sampleResetOtp : undefined
       });
     }
 
@@ -1841,7 +1842,7 @@ router.post('/', async (req, res, next) => {
       const user =
         await findUserByEmail(email);
 
-      if (!user) {
+      if (!user?.password_hash) {
         return res.status(404).json({
           error:
             'This reset code is invalid or expired.'
@@ -1978,11 +1979,14 @@ router.post('/', async (req, res, next) => {
 
       const [r] =
         await pool.query(
-          `SELECT *
-           FROM password_reset_tokens
-           WHERE token_hash=?
-             AND purpose='reset_authorization'
-             AND used_at IS NULL
+          `SELECT t.*
+           FROM password_reset_tokens t
+           INNER JOIN users u ON u.id=t.user_id
+           WHERE t.token_hash=?
+             AND t.purpose='reset_authorization'
+             AND t.used_at IS NULL
+             AND u.disabled=0
+             AND NULLIF(TRIM(u.password_hash), '') IS NOT NULL
            LIMIT 1`,
           [sha256(token)]
         );
