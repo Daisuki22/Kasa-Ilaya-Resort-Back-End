@@ -97,6 +97,35 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
           'SELECT id FROM bookings WHERE payment_proof_fingerprint=? LIMIT 1',
           [fingerprint]
         );
+        const submittedReference = String(req.body.payment_reference_number || '').trim();
+        const receiptReference = String(ocr.reference || submittedReference).trim();
+        let duplicateReference = false;
+        if (receiptReference) {
+          const [duplicateReferences] = await pool.query(
+            'SELECT id FROM bookings WHERE LOWER(payment_reference_number)=LOWER(?) OR LOWER(payment_proof_ocr_reference)=LOWER(?) LIMIT 1',
+            [receiptReference, receiptReference]
+          );
+          duplicateReference = duplicateReferences.length > 0;
+        }
+        if (duplicateFiles.length || duplicateReference) {
+          try { fs.unlinkSync(target); } catch {}
+          return res.json({
+            validation: 'duplicate',
+            message: duplicateFiles.length
+              ? 'This exact receipt image has already been submitted. Please upload your own payment receipt.'
+              : 'This transaction/reference number has already been used. Please check the receipt and upload the correct proof.',
+            duplicate_image: duplicateFiles.length > 0,
+            duplicate_reference: duplicateReference,
+            ocr_summary: {
+              payment_number: ocr.paymentNumber,
+              reference: ocr.reference,
+              date: ocr.date,
+              confidence: ocr.confidence,
+              duplicate_image: duplicateFiles.length > 0,
+              duplicate_reference: duplicateReference,
+            },
+          });
+        }
         const ocrSummary = {
           provider: ocr.provider,
           amount: ocr.amount,
@@ -115,11 +144,8 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
           recognition_failed: Boolean(ocr.recognitionFailed),
           duplicate_image: duplicateFiles.length > 0,
         };
-        const isDuplicateImage = duplicateFiles.length > 0;
-        let validation = isDuplicateImage ? 'duplicate' : 'pending_review';
-        let message = isDuplicateImage
-          ? 'This exact receipt image has already been submitted for another booking. Upload your own completed payment receipt.'
-          : 'Receipt content was scanned for review signals. An authorized admin still needs to verify the original proof.';
+        let validation = 'pending_review';
+        let message = 'Receipt content was scanned for review signals. An authorized admin still needs to verify the original proof.';
         const selectedQrCodeId = String(req.body.payment_qr_code_id || '').trim();
         if (selectedQrCodeId) {
           const [methods] = await pool.query(
@@ -140,7 +166,7 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
             submittedReference: req.body.payment_reference_number,
             latestAllowedDate: getTodayManilaDate(),
           });
-          if (!isDuplicateImage && signals.declineReason) {
+          if (signals.declineReason) {
             validation = 'declined';
             message = signals.declineReason;
           }
