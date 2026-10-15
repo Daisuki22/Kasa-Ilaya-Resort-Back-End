@@ -18,6 +18,7 @@ const createEmptyReceiptOcr = () => ({
   sender: null,
   status: 'unknown',
   receiptLike: false,
+  sampleReceipt: false,
 });
 
 const classifyPaymentProvider = (value) => {
@@ -186,6 +187,7 @@ const extractReceiptFields = ({ text, confidence }) => {
   const provider = classifyPaymentProvider(content);
   const reference = extractReference(content);
   const date = extractDate(content);
+  const sampleReceipt = /\b(?:sample|demo|for\s+testing\s+only|not\s+a\s+real\s+(?:transaction|receipt))\b/i.test(content);
   const hasPaymentLanguage = /\b(payment|transaction|reference|receipt|transfer|sent|paid|received|purchase|invoice|balance|wallet|completed|successful|authorization|confirmation)\b/i.test(content);
   return {
     provider,
@@ -200,6 +202,7 @@ const extractReceiptFields = ({ text, confidence }) => {
     sender: extractParty(content, /^(?:sender|from|paid by|sent by)\b\s*/i),
     status: failed ? 'failed' : pending ? 'pending' : success ? 'successful' : 'unknown',
     receiptLike: Boolean(provider || amountDetails.amount || reference || date || hasPaymentLanguage),
+    sampleReceipt,
   };
 };
 

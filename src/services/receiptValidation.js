@@ -43,6 +43,7 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
   const validDate = /^\d{4}-\d{2}-\d{2}$/.test(String(ocr.date || '')) ? ocr.date : null;
   const receiptLike = ocr.receiptLike ?? ocr.receipt_like;
   const recognitionFailed = Boolean(ocr.recognitionFailed ?? ocr.recognition_failed);
+  const sampleReceipt = Boolean(ocr.sampleReceipt ?? ocr.sample_receipt);
   const notReceipt = receiptLike === false && !recognitionFailed;
   let declineReason = null;
 
@@ -50,6 +51,10 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
     declineReason = validDate < latestAllowedDate
       ? `Receipt is outdated. Only receipts dated today are accepted. Receipt date: ${validDate}. Required date: ${latestAllowedDate}.`
       : `Receipt date is invalid. Only receipts dated today are accepted. Receipt date: ${validDate}. Required date: ${latestAllowedDate}.`;
+  } else if (sampleReceipt) {
+    declineReason = 'Sample or test receipts are not accepted. Upload the original payment receipt.';
+  } else if (latestAllowedDate && !validDate) {
+    declineReason = 'The receipt transaction date could not be verified. Upload a clear receipt showing the payment date.';
   } else if (Number.isFinite(Number(comparableAmount)) && Number(comparableAmount) > 0
       && Number.isFinite(Number(requiredAmount)) && Number(requiredAmount) > 0
       && Math.round(Number(comparableAmount) * 100) !== Math.round(Number(requiredAmount) * 100)) {

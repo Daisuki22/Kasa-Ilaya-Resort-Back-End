@@ -391,6 +391,7 @@ async function acceptBooking(req,res){
    const receiptImage=await getUploadedReceiptBuffer(booking.receipt_url,connection);
    if(!receiptImage)throw httpError('A valid payment receipt is required before accepting this booking.',422);
    if(booking.payment_status!=='pending_verification')throw httpError('Only bookings with a submitted payment proof can be accepted.',422);
+   if(booking.payment_proof_review==='auto_declined')throw httpError('This payment proof was automatically declined. Upload a new, current, original receipt before requesting approval.',422);
    if(!String(booking.payment_mode||booking.payment_qr_code_label||'').trim())throw httpError('The booking payment method is missing.',422);
    const [qrRows]=await connection.query('SELECT id,label,is_active FROM payment_qr_codes WHERE id=? LIMIT 1 FOR UPDATE',[booking.payment_qr_code_id]);
    if(!qrRows[0]||!qrRows[0].is_active)throw httpError('The selected payment method is no longer active. Do not accept this receipt.',422);
@@ -639,6 +640,7 @@ async function bookingAction(req,res,next){
   if(req.method==='PATCH'&&action==='request-reschedule')return requestReschedule(req,res);
   if(req.method==='PATCH'&&action==='resolve-reschedule')return rejectRescheduleRequest(req,res);
   if(req.method==='PATCH'&&action==='reschedule')return rescheduleBooking(req,res);
+  if(['PATCH','PUT'].includes(req.method)&&['receipt_url','payment_proof_review','payment_proof_fingerprint','payment_proof_ocr_provider','payment_proof_ocr_amount','payment_proof_ocr_reference','payment_proof_ocr_date','payment_proof_ocr_confidence'].some((field)=>Object.prototype.hasOwnProperty.call(req.body||{},field)))return res.status(403).json({error:'Payment proof and OCR verification data cannot be edited directly. Upload a new proof and use the booking verification flow.'});
   if(['PATCH','PUT'].includes(req.method)&&Object.keys(req.body||{}).some((key)=>['terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','additional_fee_paid_at','additional_fee_paid_by','approved_by','approved_at','rejected_by','rejected_at','rejection_reason'].includes(key)))return res.status(403).json({error:'Booking legal acceptance and audit records cannot be edited directly.'});
   if(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'rebooking_status'))return res.status(400).json({error:'Use the reschedule request and decision actions to change request status.'});
   if(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'booking_date'))return res.status(400).json({error:'Use a booking reschedule action to change reservation dates.'});

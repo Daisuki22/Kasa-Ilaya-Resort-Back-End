@@ -30,6 +30,7 @@ function createPaymentProofUploadToken({ userId, fileUrl, secret, ocr, now = Dat
       date: typeof ocr.date === 'string' ? ocr.date.slice(0, 10) : null,
       confidence: Number.isFinite(Number(ocr.confidence)) ? Math.max(0, Math.min(100, Number(ocr.confidence))) : 0,
       status: typeof ocr.status === 'string' ? ocr.status.slice(0, 16) : 'unknown',
+      sampleReceipt: Boolean(ocr.sampleReceipt ?? ocr.sample_receipt),
     } : null,
   })).toString('base64url');
   return `${payload}.${signatureFor(payload, secret)}`;

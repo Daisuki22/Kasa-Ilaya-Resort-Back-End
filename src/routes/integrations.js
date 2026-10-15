@@ -148,6 +148,7 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
           confidence: ocr.confidence,
           status: ocr.status,
           receipt_like: ocr.receiptLike,
+          sample_receipt: Boolean(ocr.sampleReceipt),
           recognition_failed: Boolean(ocr.recognitionFailed),
           duplicate_image: duplicateFiles.length > 0,
         };
