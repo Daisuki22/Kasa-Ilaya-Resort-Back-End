@@ -67,7 +67,11 @@ const extractAmountDetails = (text) => {
   const labeled = source.match(/(?:amount(?:\s+(?:sent|paid|received))?|total(?:\s+amount)?|sent|paid|received)\s*[:=\-]?\s*(PHP|₱|\$|€|£|¥)?\s*([\d,]+(?:\.\d{1,2})?)/iu);
   if (labeled) {
     const marker = labeled[1];
-    const currency = marker ? (/^(?:PHP|₱)$/i.test(marker) ? 'PHP' : marker === '$' ? 'USD' : marker) : null;
+    const normalizedMarker = String(marker || '').normalize('NFKC').trim().toUpperCase();
+    const currency = !marker ? null
+      : /^(?:PHP|\u20b1|PESO(?:S)?)$/.test(normalizedMarker) ? 'PHP'
+        : normalizedMarker === '$' ? 'USD'
+          : marker;
     const amount = parseAmount(labeled[2]);
     return {
       amount,
