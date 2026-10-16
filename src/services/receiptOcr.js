@@ -145,10 +145,24 @@ const isPhilippineMobileNumber = (value) => {
 
 const extractPaymentNumber = (text) => {
   const source = String(text || '');
-  const labeled = source.match(/\b(?:(?:gcash|sender|payment|account|wallet|mobile|phone)\s*(?:account\s*)?(?:no\.?|number|#)|(?:sent|paid)\s+from)\s*[:#=-]?\s*([+()\d][+()\d .-]{4,31})/i);
+  const maskedNumberChars = '*•●xX';
+  const labeled = source.match(new RegExp(
+    `\\b(?:(?:gcash|sender|payment|account|wallet|mobile|phone)\\s*(?:account\\s*)?(?:no\\.?|number|#)|(?:sent|paid)\\s+from)\\s*[:#=-]?\\s*([+()\\d][+()\\d \\t.*•●xX-]{4,31})`,
+    'i'
+  ));
   if (labeled) {
     const value = labeled[1].trim().replace(/\s+/g, ' ').slice(0, 64);
-    if (value.replace(/\D/g, '').length >= 5) return value.replace(/[\u0000-\u001f\u007f]/g, '') || null;
+    const visibleDigits = value.replace(/\D/g, '').length;
+    const hasMask = [...value].some((character) => maskedNumberChars.includes(character));
+    if (visibleDigits >= 5 || (hasMask && visibleDigits >= 2)) {
+      return value.replace(/[\u0000-\u001f\u007f]/g, '') || null;
+    }
+  }
+
+  const maskedMobilePattern = /(?:\+?63|0)[\d .()\-]{0,14}[*•●xX]+[\d .()\-*•●xX]{0,12}/g;
+  for (const match of source.matchAll(maskedMobilePattern)) {
+    const value = match[0].trim().replace(/\s+/g, ' ').slice(0, 32);
+    if (value.replace(/\D/g, '').length >= 2) return value;
   }
 
   // GCash receipts often print a mobile number without a "Payment Number" label.

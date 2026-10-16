@@ -23,6 +23,37 @@ function recipientMatchesExpected(recipient, expectedName) {
   return matches >= requiredMatches;
 }
 
+function paymentNumberMatches(receiptNumber, submittedNumber) {
+  const maskPattern = /[*•●xX]/;
+  const receipt = String(receiptNumber || '').trim();
+  const submitted = String(submittedNumber || '').trim();
+  const receiptDigits = receipt.replace(/\D/g, '');
+  const submittedDigits = submitted.replace(/\D/g, '');
+
+  if (!maskPattern.test(receipt) && !maskPattern.test(submitted)) {
+    return receiptDigits === submittedDigits;
+  }
+
+  const masked = maskPattern.test(receipt) ? receipt : submitted;
+  const fullDigits = maskPattern.test(receipt) ? submittedDigits : receiptDigits;
+  const visibleParts = masked.toLowerCase().split(/[*•●x]+/).map((part) => part.replace(/\D/g, '')).filter(Boolean);
+  if (!visibleParts.length || !fullDigits) return false;
+
+  let searchFrom = 0;
+  return visibleParts.every((part, index) => {
+    if (index === 0) {
+      if (!fullDigits.startsWith(part)) return false;
+      searchFrom = part.length;
+      return true;
+    }
+    if (index === visibleParts.length - 1) return fullDigits.endsWith(part);
+    const foundAt = fullDigits.indexOf(part, searchFrom);
+    if (foundAt < 0) return false;
+    searchFrom = foundAt + part.length;
+    return true;
+  });
+}
+
 function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expectedAccountName, expectedAccountNumber, submittedPaymentNumber, submittedReference, latestAllowedDate }) {
   const confidence = Number(ocr.confidence) || 0;
   const confident = confidence >= MIN_CONFIDENT_MISMATCH;
@@ -75,7 +106,7 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
   } else if (confident && ocr.recipient && expectedAccountName && !recipientMatchesExpected(ocr.recipient, expectedAccountName)) {
     declineReason = 'The receipt recipient does not match the selected resort payment account.';
   } else if (confident && extractedPaymentNumber && submittedPaymentNumber
-      && extractedPaymentNumber.replace(/\D/g, '') !== String(submittedPaymentNumber).replace(/\D/g, '')) {
+      && !paymentNumberMatches(extractedPaymentNumber, submittedPaymentNumber)) {
     declineReason = 'Invalid payment/reference information.';
   } else if (confident && extractedReference && submittedReference
       && extractedReference.toLowerCase() !== String(submittedReference).trim().toLowerCase()) {

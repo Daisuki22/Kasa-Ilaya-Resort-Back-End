@@ -141,7 +141,13 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
           payment_number: ocr.paymentNumber,
           // Autofill is a user-editable suggestion. A valid field match should
           // still be shown even if the average confidence of the whole image is low.
-          autofill_payment_number: String(ocr.paymentNumber || '').trim().length >= 5,
+          autofill_payment_number: (() => {
+            const paymentNumber = String(ocr.paymentNumber || '').trim();
+            const visibleDigits = paymentNumber.replace(/\D/g, '').length;
+            return /[*•●xX]/.test(paymentNumber)
+              ? visibleDigits >= 2
+              : paymentNumber.length >= 5;
+          })(),
           reference: ocr.reference,
           autofill_reference: String(ocr.reference || '').trim().length >= 4,
           date: ocr.date,
