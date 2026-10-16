@@ -10,7 +10,7 @@ const { auth } = require('../middleware/auth');
 const { isAdmin } = require('../utils');
 const config = require('../config/env');
 const { createPaymentProofUploadToken } = require('../services/paymentProofUpload');
-const { createEmptyReceiptOcr, recognizeReceipt } = require('../services/receiptOcr');
+const { classifyPaymentProvider, createEmptyReceiptOcr, recognizeReceipt } = require('../services/receiptOcr');
 const { MAX_PAYMENT_RECEIPT_BYTES, isValidPaymentReceiptImage } = require('../services/paymentReceiptFile');
 const { validateReceiptSignals } = require('../services/receiptValidation');
 const { getTodayManilaDate } = require('../services/bookingSchedule');
@@ -169,6 +169,23 @@ router.post('/', auth, requireUserForSensitiveActions, parseSingleUpload, async 
           if (!methods[0]) {
             try { fs.unlinkSync(target); } catch {}
             return res.status(422).json({ error: 'The selected payment method is unavailable. Refresh the page and upload the receipt again.' });
+          }
+          const selectedProvider = classifyPaymentProvider(methods[0].label);
+          const localPaymentProviders = new Set(['gcash', 'maya', 'bdo', 'bpi', 'unionbank', 'seabank', 'gotyme', 'metrobank']);
+          const detectedCurrency = String(ocr.amountCurrency || '').trim().toUpperCase();
+          if (localPaymentProviders.has(selectedProvider) && ['£', 'GBP'].includes(detectedCurrency)) {
+            // OCR can mistake the peso sign (₱) for a pound sign on local receipts.
+            // Local Philippine payment rails settle in PHP, so normalize this OCR
+            // confusion before validation and before returning the amount to the UI.
+            const pesoAmount = Number(ocr.phpEquivalent) > 0 ? Number(ocr.phpEquivalent) : Number(ocr.amount);
+            if (Number.isFinite(pesoAmount) && pesoAmount > 0) {
+              ocr.amount = pesoAmount;
+              ocr.amountCurrency = 'PHP';
+              ocr.phpEquivalent = pesoAmount;
+              ocrSummary.amount = pesoAmount;
+              ocrSummary.amount_currency = 'PHP';
+              ocrSummary.php_equivalent = pesoAmount;
+            }
           }
           const signals = validateReceiptSignals({
             ocr,
