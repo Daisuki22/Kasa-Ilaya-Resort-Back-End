@@ -30,12 +30,16 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
   const selectedProvider = classifyPaymentProvider(selectedMethod);
   const extractedPaymentNumber = cleanReceiptValue(ocr.paymentNumber, 64);
   const extractedReference = cleanReceiptValue(ocr.reference, 128);
-  const amountCurrency = String(ocr.amountCurrency || '').toUpperCase();
+  const amountCurrency = String(ocr.amountCurrency || ocr.amount_currency || '').toUpperCase();
+  const phpEquivalent = Number(ocr.phpEquivalent ?? ocr.php_equivalent);
+  const extractedAmount = Number(ocr.amount);
+  const hasExtractedAmount = Number.isFinite(extractedAmount) && extractedAmount > 0;
+  const hasPhpEquivalent = Number.isFinite(phpEquivalent) && phpEquivalent > 0;
   const comparableAmount = amountCurrency === 'USD'
-    ? ocr.phpEquivalent
+    ? (hasPhpEquivalent ? phpEquivalent : null)
     : amountCurrency && amountCurrency !== 'PHP'
-      ? null
-      : ocr.amount;
+      ? (hasPhpEquivalent ? phpEquivalent : null)
+      : hasExtractedAmount ? extractedAmount : hasPhpEquivalent ? phpEquivalent : null;
   const expectedAccountDigits = String(expectedAccountNumber || '').replace(/\D/g, '');
   const recipientDigits = String(ocr.recipient || '').replace(/\D/g, '');
   const paymentNumber = confident && extractedPaymentNumber ? extractedPaymentNumber : cleanReceiptValue(submittedPaymentNumber, 64);
@@ -55,10 +59,13 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
     declineReason = 'Sample or test receipts are not accepted. Upload the original payment receipt.';
   } else if (latestAllowedDate && !validDate) {
     declineReason = 'The receipt transaction date could not be verified. Upload a clear receipt showing the payment date.';
-  } else if (Number.isFinite(Number(comparableAmount)) && Number(comparableAmount) > 0
-      && Number.isFinite(Number(requiredAmount)) && Number(requiredAmount) > 0
-      && Math.round(Number(comparableAmount) * 100) !== Math.round(Number(requiredAmount) * 100)) {
-    declineReason = 'Payment amount does not match required amount.';
+  } else if (hasExtractedAmount || hasPhpEquivalent) {
+    const expectedAmount = Number(requiredAmount);
+    if (!Number.isFinite(expectedAmount) || expectedAmount <= 0 || comparableAmount === null) {
+      declineReason = 'Payment amount could not be verified against the required amount.';
+    } else if (Math.round(comparableAmount * 100) !== Math.round(expectedAmount * 100)) {
+      declineReason = 'Payment amount does not match required amount.';
+    }
   } else if (detectedProvider && selectedProvider && detectedProvider !== selectedProvider) {
     declineReason = 'Payment method does not match selected payment method.';
   } else if (confident && expectedAccountDigits.length >= 5 && recipientDigits.length === expectedAccountDigits.length
@@ -88,7 +95,7 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
     extractedReference,
     declineReason,
     notReceipt,
-    amount: Number.isFinite(Number(comparableAmount)) && Number(comparableAmount) > 0 ? Number(Number(comparableAmount).toFixed(2)) : null,
+    amount: comparableAmount !== null ? Number(comparableAmount.toFixed(2)) : null,
     amountCurrency: amountCurrency || null,
     date: validDate,
     confidence: Math.max(0, Math.min(100, confidence)),
