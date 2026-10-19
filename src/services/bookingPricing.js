@@ -25,7 +25,9 @@ function quoteBooking({ packageRecord, tourType, guestCount, paymentType }) {
     throw statusError("Choose a valid payment type.");
   }
 
-  const totalAmount = Number((basePrice + Math.max(guests - 1, 0) * ADDITIONAL_GUEST_RATE).toFixed(2));
+  const includedGuestCount = Math.max(1, Math.trunc(Number(packageRecord.max_guests) || 1));
+  const additionalGuestCount = Math.max(guests - includedGuestCount, 0);
+  const totalAmount = Number((basePrice + additionalGuestCount * ADDITIONAL_GUEST_RATE).toFixed(2));
   if (!Number.isFinite(totalAmount)) {
     throw statusError("The guest total is too large to calculate.");
   }
@@ -33,6 +35,7 @@ function quoteBooking({ packageRecord, tourType, guestCount, paymentType }) {
 
   return {
     total_amount: totalAmount,
+    included_guest_count: includedGuestCount,
     reservation_fee_amount: reservationFee,
     payment_type: paymentType,
     payment_amount_due: paymentType === "full_payment" ? totalAmount : reservationFee,

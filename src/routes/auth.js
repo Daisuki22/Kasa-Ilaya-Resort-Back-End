@@ -174,6 +174,14 @@ async function sendLoginNotification(user) {
   }
 }
 
+const sessionLocationFromProxy = (req) => {
+  const readHeader = (...names) => names.map((name) => String(req?.get?.(name) || '').trim()).find(Boolean) || '';
+  const city = readHeader('cf-ipcity', 'x-vercel-ip-city');
+  const region = readHeader('cf-region', 'x-vercel-ip-country-region');
+  const country = readHeader('cf-ipcountry', 'x-vercel-ip-country');
+  return [city, region, country].filter(Boolean).join(', ').slice(0, 191) || null;
+};
+
 async function issue(res, user, req) {
   let deviceId = String(req?.cookies?.[DEVICE_ID_COOKIE] || '');
   if (!/^[a-f0-9]{64}$/i.test(deviceId)) {
@@ -197,10 +205,12 @@ async function issue(res, user, req) {
   const sessionId = crypto.randomUUID();
   const createdAt = now();
   const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+  const ipAddress = String(req?.ip || req?.socket?.remoteAddress || '').replace(/^::ffff:/, '').slice(0, 45) || null;
+  const location = sessionLocationFromProxy(req);
   await pool.query(
-    `INSERT INTO auth_sessions (id,user_id,user_agent,device_fingerprint,created_at,last_seen_at,expires_at)
-     VALUES (?,?,?,?,?,?,?)`,
-    [sessionId, user.id, String(req?.get('user-agent') || '').slice(0, 512) || null, deviceFingerprint, createdAt, createdAt, expiresAt]
+    `INSERT INTO auth_sessions (id,user_id,user_agent,ip_address,location,device_fingerprint,created_at,last_seen_at,expires_at)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [sessionId, user.id, String(req?.get('user-agent') || '').slice(0, 512) || null, ipAddress, location, deviceFingerprint, createdAt, createdAt, expiresAt]
   );
   await recordAccountActivity(user.id, 'sign_in', 'Signed in successfully.');
   const token = jwt.sign(
@@ -363,7 +373,7 @@ router.get('/', async (req, res, next) => {
     if (action === 'account-sessions') {
       if (!req.user || !req.authSessionId) return res.status(401).json({ error: 'Not authenticated.' });
       const [rows] = await pool.query(
-        `SELECT id, user_agent, created_at, last_seen_at, expires_at
+        `SELECT id, user_agent, ip_address, location, created_at, last_seen_at, expires_at
          FROM auth_sessions
          WHERE user_id=? AND revoked_at IS NULL AND expires_at>NOW()
          ORDER BY last_seen_at DESC`,

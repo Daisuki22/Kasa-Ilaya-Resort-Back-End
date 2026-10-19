@@ -82,6 +82,8 @@ async function ensureAccountSettingsSchema(){
       user_id VARCHAR(64) NOT NULL,
       token_fingerprint CHAR(64) NULL,
       user_agent VARCHAR(512) NULL,
+      ip_address VARCHAR(45) NULL,
+      location VARCHAR(191) NULL,
       created_at DATETIME NOT NULL,
       last_seen_at DATETIME NOT NULL,
       expires_at DATETIME NOT NULL,
@@ -93,6 +95,8 @@ async function ensureAccountSettingsSchema(){
   }
   await addColumnIfMissing('auth_sessions','token_fingerprint','token_fingerprint CHAR(64) NULL');
   await addColumnIfMissing('auth_sessions','device_fingerprint','device_fingerprint CHAR(64) NULL AFTER user_agent');
+  await addColumnIfMissing('auth_sessions','ip_address','ip_address VARCHAR(45) NULL AFTER user_agent');
+  await addColumnIfMissing('auth_sessions','location','location VARCHAR(191) NULL AFTER ip_address');
   if(!await indexExists('auth_sessions','idx_auth_sessions_token_fingerprint')){
     await pool.query('ALTER TABLE auth_sessions ADD UNIQUE KEY idx_auth_sessions_token_fingerprint (token_fingerprint)');
   }
