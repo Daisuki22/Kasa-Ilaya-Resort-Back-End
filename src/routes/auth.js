@@ -469,8 +469,8 @@ router.post('/', async (req, res, next) => {
     if (action === 'admin-create-account') {
       if (!req.user) return res.status(401).json({ error: 'Not authenticated.' });
       const actorRole = req.user.role || req.user.app_role;
-      if (!['admin', 'super_admin'].includes(actorRole)) {
-        return res.status(403).json({ error: 'Only resort administrators can create administrator accounts.' });
+      if (actorRole !== 'super_admin') {
+        return res.status(403).json({ error: 'Only a super admin can create administrator accounts.' });
       }
 
       const role = String(p.role || '').trim();
