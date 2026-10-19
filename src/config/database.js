@@ -29,6 +29,9 @@ async function ensurePaymentQrCodeImageCapacity(){
   if(dataType&&!['mediumtext','longtext'].includes(dataType))await pool.query('ALTER TABLE `payment_qr_codes` MODIFY COLUMN `image_url` MEDIUMTEXT NOT NULL');
 }
 async function ensureRuntimeSchema(){
+  if(await tableExists('bookings')){
+    await addColumnIfMissing('bookings','included_guest_count','included_guest_count INT NOT NULL DEFAULT 1 AFTER guest_count');
+  }
   if(await tableExists('notifications')){
     await addColumnIfMissing('notifications','actor_name','actor_name VARCHAR(191) NULL AFTER entity_id');
     await addColumnIfMissing('notifications','actor_profile_image_url','actor_profile_image_url VARCHAR(1024) NULL AFTER actor_name');
