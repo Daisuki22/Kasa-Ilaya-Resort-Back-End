@@ -31,6 +31,12 @@ async function ensurePaymentQrCodeImageCapacity(){
 async function ensureRuntimeSchema(){
   if(await tableExists('bookings')){
     await addColumnIfMissing('bookings','included_guest_count','included_guest_count INT NOT NULL DEFAULT 1 AFTER guest_count');
+    await addColumnIfMissing('bookings','rebooking_requested_package_id','rebooking_requested_package_id VARCHAR(64) NULL');
+    await addColumnIfMissing('bookings','rebooking_requested_package_name','rebooking_requested_package_name VARCHAR(191) NULL');
+    await addColumnIfMissing('bookings','rebooking_requested_total_amount','rebooking_requested_total_amount DECIMAL(12,2) NULL');
+    await addColumnIfMissing('bookings','rebooking_additional_payment_amount','rebooking_additional_payment_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00');
+    await addColumnIfMissing('bookings','rebooking_additional_payment_paid_at','rebooking_additional_payment_paid_at DATETIME NULL');
+    await addColumnIfMissing('bookings','rebooking_additional_payment_paid_by','rebooking_additional_payment_paid_by VARCHAR(191) NULL');
   }
   if(await tableExists('notifications')){
     await addColumnIfMissing('notifications','actor_name','actor_name VARCHAR(191) NULL AFTER entity_id');
