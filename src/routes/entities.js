@@ -683,6 +683,7 @@ async function completeBooking(req,res){
   const booking=rows[0];
   if(!booking)throw httpError('Reservation not found.',404);
   if(booking.status!=='confirmed')throw httpError('Only an active confirmed reservation can be marked completed.',409);
+  if(dateOnly(booking.booking_date)!==getTodayManilaDate())throw httpError('A reservation can only be marked completed on its booking date.',409);
   const remainingBalance=Math.max(0,Number(booking.rebooking_additional_payment_amount||0));
   if(remainingBalance>0&&!confirmedPayment)throw httpError(`Confirm that PHP ${remainingBalance.toFixed(2)} remaining balance was collected at the resort before completing this reservation.`,409);
   const paidBy=remainingBalance>0?(req.user.email||req.user.id||null):null;
