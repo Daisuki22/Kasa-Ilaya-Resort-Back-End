@@ -15,7 +15,7 @@ const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,calendarDaysUntil,dateKeyFromDate,
 const BOOKING_SCHEDULE_LOCK='kasa_ilaya_booking_schedule';
 const MAP={
  ActivityLog:{table:'activity_logs',fields:['id','created_date','updated_date','user_email','user_name','actor_role','action','entity_type','entity_id','details']},
- Booking:{table:'bookings',fields:['id','created_date','updated_date','booking_reference','package_id','package_name','tour_type','booking_date','guest_count','included_guest_count','customer_user_id','customer_name','customer_email','customer_phone','special_requests','total_amount','reservation_fee_amount','payment_type','payment_amount_due','payment_mode','payment_number','payment_reference_number','payment_qr_code_id','payment_qr_code_label','receipt_url','payment_proof_review','payment_proof_fingerprint','payment_proof_ocr_provider','payment_proof_ocr_amount','payment_proof_ocr_reference','payment_proof_ocr_date','payment_proof_ocr_confidence','terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','status','approved_by','approved_at','rejected_by','rejected_at','rejection_reason','payment_status','additional_fee_amount','additional_fee_reason','additional_fee_items','additional_fee_status','additional_fee_paid_at','additional_fee_paid_by','rebooking_status','rebooking_original_date','rebooking_requested_date','rebooking_requested_package_id','rebooking_requested_package_name','rebooking_requested_total_amount','rebooking_additional_payment_amount','rebooking_reason','rebooking_requested_at','rebooking_resolved_at','rebooking_resolution_note','rebooking_count'],json:['additional_fee_items'],numeric:['included_guest_count','rebooking_requested_total_amount','rebooking_additional_payment_amount']},
+ Booking:{table:'bookings',fields:['id','created_date','updated_date','booking_reference','package_id','package_name','tour_type','booking_date','guest_count','included_guest_count','customer_user_id','customer_name','customer_email','customer_phone','special_requests','total_amount','reservation_fee_amount','payment_type','payment_amount_due','payment_mode','payment_number','payment_reference_number','payment_qr_code_id','payment_qr_code_label','receipt_url','payment_proof_review','payment_proof_fingerprint','payment_proof_ocr_provider','payment_proof_ocr_amount','payment_proof_ocr_reference','payment_proof_ocr_date','payment_proof_ocr_confidence','terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','status','approved_by','approved_at','rejected_by','rejected_at','rejection_reason','payment_status','additional_fee_amount','additional_fee_reason','additional_fee_items','additional_fee_status','additional_fee_paid_at','additional_fee_paid_by','rebooking_status','rebooking_original_date','rebooking_requested_date','rebooking_requested_package_id','rebooking_requested_package_name','rebooking_requested_total_amount','rebooking_additional_payment_amount','rebooking_additional_payment_paid_at','rebooking_additional_payment_paid_by','rebooking_reason','rebooking_requested_at','rebooking_resolved_at','rebooking_resolution_note','rebooking_count'],json:['additional_fee_items'],numeric:['included_guest_count','rebooking_requested_total_amount','rebooking_additional_payment_amount']},
  FoundItem:{table:'found_items',fields:['id','created_date','updated_date','item_name','description','date_found','location_found','found_by','status','image_url','claimed_guest_name','claimed_contact','claimed_reservation_id','proof_of_ownership','released_by','date_claimed','is_active']},
  LostItemReport:{table:'lost_item_reports',fields:['id','created_date','updated_date','guest_name','reservation_number','item_lost','description','date_lost','contact_number','email','status','matched_item_id']},
  Package:{table:'packages',fields:['id','created_date','updated_date','name','description','tour_type','price','day_tour_price','night_tour_price','twenty_two_hour_price','max_guests','inclusions','gallery_images','image_url','is_active'],json:['inclusions','gallery_images'],bool:['is_active'],numeric:['price','day_tour_price','night_tour_price','twenty_two_hour_price','max_guests']},
@@ -88,11 +88,13 @@ async function rescheduleBooking(req,res){
    if(!nextPackage)throw httpError('The requested package is no longer available. Decline this request and ask the guest to submit a new one.',409);
    const quote=quoteBooking({packageRecord:nextPackage,tourType:booking.tour_type,guestCount:booking.guest_count,paymentType:booking.payment_type||'full_payment'});
    if(booking.rebooking_requested_total_amount===null||Math.round(Number(booking.rebooking_requested_total_amount)*100)!==Math.round(quote.total_amount*100))throw httpError('The requested package price changed after submission. Decline this request and ask the guest to submit it again.',409);
-   const expectedAdditional=Math.max(0,Number((quote.total_amount-Number(booking.total_amount||0)).toFixed(2)));
+   const approvedTotal=Math.max(Number(booking.total_amount||0),quote.total_amount);
+   const verifiedPaidAmount=String(booking.payment_status||'').toLowerCase()==='paid'?Number(booking.payment_amount_due||booking.reservation_fee_amount||0):0;
+   const expectedAdditional=Math.max(0,Number((approvedTotal-verifiedPaidAmount).toFixed(2)));
    if(Math.round(Number(booking.rebooking_additional_payment_amount||0)*100)!==Math.round(expectedAdditional*100))throw httpError('The package price difference changed. Decline this request and ask the guest to submit it again.',409);
    nextPackageId=nextPackage.id;
    nextPackageName=nextPackage.name;
-   nextTotalAmount=Math.max(Number(booking.total_amount||0),quote.total_amount);
+   nextTotalAmount=approvedTotal;
    additionalPaymentAmount=expectedAdditional;
    nextIncludedGuestCount=Math.max(1,Math.trunc(Number(nextPackage.max_guests)||1));
   }else if((booking.rebooking_status||'none')==='pending'){
@@ -101,10 +103,10 @@ async function rescheduleBooking(req,res){
   const originalDate=dateOnly(booking.booking_date);
   const resolutionNote=note||(admin?'Rescheduled by resort administrator.':'Rescheduled by guest.');
   phase='update_booking';
-  await connection.query("UPDATE bookings SET booking_date=?,package_id=?,package_name=?,total_amount=?,included_guest_count=?,rebooking_additional_payment_amount=?,rebooking_status='approved',rebooking_original_date=?,rebooking_requested_date=?,rebooking_requested_at=NOW(),rebooking_resolved_at=NOW(),rebooking_resolution_note=?,rebooking_count=COALESCE(rebooking_count,0)+1,updated_date=NOW() WHERE id=?",[requestedDate,nextPackageId,nextPackageName,nextTotalAmount,nextIncludedGuestCount,additionalPaymentAmount,originalDate,requestedDate,resolutionNote,booking.id]);
+  await connection.query("UPDATE bookings SET booking_date=?,package_id=?,package_name=?,total_amount=?,included_guest_count=?,rebooking_additional_payment_amount=?,rebooking_additional_payment_paid_at=NULL,rebooking_additional_payment_paid_by=NULL,rebooking_status='approved',rebooking_original_date=?,rebooking_requested_date=?,rebooking_requested_at=NOW(),rebooking_resolved_at=NOW(),rebooking_resolution_note=?,rebooking_count=COALESCE(rebooking_count,0)+1,updated_date=NOW() WHERE id=?",[requestedDate,nextPackageId,nextPackageName,nextTotalAmount,nextIncludedGuestCount,additionalPaymentAmount,originalDate,requestedDate,resolutionNote,booking.id]);
   const oldTime=getTourTime(booking.tour_type);
   const newTime=getTourTime(booking.tour_type);
-  const details=`${admin?'Admin':'Customer'} rescheduled ${booking.booking_reference} (booking ${booking.id}) from ${originalDate} ${oldTime.label} to ${requestedDate} ${newTime.label}. Package: ${booking.package_name} to ${nextPackageName}. Guests: ${booking.guest_count}. Additional package payment due: ${additionalPaymentAmount.toFixed(2)}. Existing payment status preserved: ${booking.payment_status}.`;
+  const details=`${admin?'Admin':'Customer'} rescheduled ${booking.booking_reference} (booking ${booking.id}) from ${originalDate} ${oldTime.label} to ${requestedDate} ${newTime.label}. Package: ${booking.package_name} to ${nextPackageName}. Guests: ${booking.guest_count}. Remaining balance payable at resort: ${additionalPaymentAmount.toFixed(2)}. Existing payment status preserved: ${booking.payment_status}.`;
   phase='write_activity_log';
   await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Guest','Reservation Rescheduled','Booking',booking.id,details]);
   phase='reload_booking';
@@ -193,7 +195,9 @@ async function requestReschedule(req,res){
    nextPackageId=nextPackage.id;
    nextPackageName=nextPackage.name;
    requestedTotalAmount=quote.total_amount;
-   additionalPaymentAmount=Math.max(0,Number((quote.total_amount-Number(booking.total_amount||0)).toFixed(2)));
+   const requestedTotal=Math.max(Number(booking.total_amount||0),quote.total_amount);
+   const verifiedPaidAmount=String(booking.payment_status||'').toLowerCase()==='paid'?Number(booking.payment_amount_due||booking.reservation_fee_amount||0):0;
+   additionalPaymentAmount=Math.max(0,Number((requestedTotal-verifiedPaidAmount).toFixed(2)));
   }
   phase='save_request';
   await connection.query("UPDATE bookings SET rebooking_status='pending',rebooking_original_date=?,rebooking_requested_date=?,rebooking_requested_package_id=?,rebooking_requested_package_name=?,rebooking_requested_total_amount=?,rebooking_additional_payment_amount=?,rebooking_reason=?,rebooking_requested_at=NOW(),rebooking_resolved_at=NULL,rebooking_resolution_note=NULL,updated_date=NOW() WHERE id=?",[originalDate,body.booking_date,nextPackageId,nextPackageName,requestedTotalAmount,additionalPaymentAmount,note||null,booking.id]);
@@ -201,7 +205,7 @@ async function requestReschedule(req,res){
   phase='commit_transaction';
   await connection.commit();
   transactionStarted=false;
-  await notifySafely({email:booking.customer_email,eventKey:`booking:${booking.id}:reschedule-requested:${body.booking_date}:${nextPackageId||'same-package'}`,title:'Your reschedule request was submitted',description:`Your request to change the date from ${originalDate} to ${body.booking_date} and package to ${nextPackageName||'the current package'} is awaiting resort review.${additionalPaymentAmount>0?` Additional payment if approved: PHP ${additionalPaymentAmount.toFixed(2)}.`:''}`,link:'/MyBookings',entityId:booking.id});
+  await notifySafely({email:booking.customer_email,eventKey:`booking:${booking.id}:reschedule-requested:${body.booking_date}:${nextPackageId||'same-package'}`,title:'Your reschedule request was submitted',description:`Your request to change the date from ${originalDate} to ${body.booking_date} and package to ${nextPackageName||'the current package'} is awaiting resort review.${additionalPaymentAmount>0?` Remaining balance payable at the resort if approved: PHP ${additionalPaymentAmount.toFixed(2)}.`:''}`,link:'/MyBookings',entityId:booking.id});
   return res.json({success:true,data:deserialize(MAP.Booking,updatedRows[0])});
  }catch(error){
   if(transactionStarted)try{await connection.rollback();}catch{}
@@ -664,6 +668,36 @@ async function adminBookingPage(req,res,next){
   return res.json({success:true,data:rows.map((row)=>deserialize(MAP.Booking,row)),pagination:{page,limit:pageSize,total,totalPages}});
  }catch(error){return next(error);}
 }
+async function completeBooking(req,res){
+ if(!isAdmin(req.user))return res.status(403).json({error:'Only resort administrators can complete a reservation.'});
+ const bookingId=String(req.query.id||'');
+ if(!bookingId)return res.status(422).json({error:'Missing booking id.'});
+ const confirmedPayment=req.body?.confirm_remaining_balance_paid===true;
+ let connection;
+ let transactionStarted=false;
+ try{
+  connection=await pool.getConnection();
+  await connection.beginTransaction();
+  transactionStarted=true;
+  const [rows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1 FOR UPDATE',[bookingId]);
+  const booking=rows[0];
+  if(!booking)throw httpError('Reservation not found.',404);
+  if(booking.status!=='confirmed')throw httpError('Only an active confirmed reservation can be marked completed.',409);
+  const remainingBalance=Math.max(0,Number(booking.rebooking_additional_payment_amount||0));
+  if(remainingBalance>0&&!confirmedPayment)throw httpError(`Confirm that PHP ${remainingBalance.toFixed(2)} remaining balance was collected at the resort before completing this reservation.`,409);
+  const paidBy=remainingBalance>0?(req.user.email||req.user.id||null):null;
+  await connection.query("UPDATE bookings SET status='completed',rebooking_additional_payment_paid_at=IF(?>0,NOW(),rebooking_additional_payment_paid_at),rebooking_additional_payment_paid_by=IF(?>0,?,rebooking_additional_payment_paid_by),updated_date=NOW() WHERE id=? AND status='confirmed'",[remainingBalance,remainingBalance,paidBy,bookingId]);
+  const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[bookingId]);
+  await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,actor_role,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||null,req.user.role||req.user.app_role||'admin','Booking completed','Booking',bookingId,`Completed ${booking.booking_reference||bookingId}. Remaining balance collected at resort: PHP ${remainingBalance.toFixed(2)}.`]);
+  await connection.commit();
+  transactionStarted=false;
+  return res.json({success:true,data:deserialize(MAP.Booking,updatedRows[0])});
+ }catch(error){
+  if(transactionStarted)try{await connection.rollback();}catch{}
+  const status=error.status||500;
+  return res.status(status).json({error:status===500?'Unable to complete reservation.':error.message});
+ }finally{if(connection)connection.release();}
+}
 async function bookingAction(req,res,next){
  try{
   const entity=String(req.query.entity||'');
@@ -676,21 +710,17 @@ async function bookingAction(req,res,next){
   if(req.method==='PATCH'&&action==='accept')return acceptBooking(req,res);
   if(req.method==='PATCH'&&action==='reject')return rejectBooking(req,res);
   if(req.method==='PATCH'&&action==='mark-additional-fee-paid')return markAdditionalFeePaid(req,res);
+  if(req.method==='PATCH'&&action==='complete')return completeBooking(req,res);
   if(req.method==='PATCH'&&action==='request-reschedule')return requestReschedule(req,res);
   if(req.method==='PATCH'&&action==='resolve-reschedule')return rejectRescheduleRequest(req,res);
   if(req.method==='PATCH'&&action==='reschedule')return rescheduleBooking(req,res);
   if(['PATCH','PUT'].includes(req.method)&&['receipt_url','payment_proof_review','payment_proof_fingerprint','payment_proof_ocr_provider','payment_proof_ocr_amount','payment_proof_ocr_reference','payment_proof_ocr_date','payment_proof_ocr_confidence'].some((field)=>Object.prototype.hasOwnProperty.call(req.body||{},field)))return res.status(403).json({error:'Payment proof and OCR verification data cannot be edited directly. Upload a new proof and use the booking verification flow.'});
-  if(['PATCH','PUT'].includes(req.method)&&Object.keys(req.body||{}).some((key)=>['terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','additional_fee_paid_at','additional_fee_paid_by','approved_by','approved_at','rejected_by','rejected_at','rejection_reason'].includes(key)))return res.status(403).json({error:'Booking legal acceptance and audit records cannot be edited directly.'});
+  if(['PATCH','PUT'].includes(req.method)&&Object.keys(req.body||{}).some((key)=>['terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','additional_fee_paid_at','additional_fee_paid_by','rebooking_requested_package_id','rebooking_requested_package_name','rebooking_requested_total_amount','rebooking_additional_payment_amount','rebooking_additional_payment_paid_at','rebooking_additional_payment_paid_by','approved_by','approved_at','rejected_by','rejected_at','rejection_reason'].includes(key)))return res.status(403).json({error:'Booking legal acceptance, reschedule pricing, and audit records cannot be edited directly.'});
   if(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'rebooking_status'))return res.status(400).json({error:'Use the reschedule request and decision actions to change request status.'});
   if(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'booking_date'))return res.status(400).json({error:'Use a booking reschedule action to change reservation dates.'});
   if(['PATCH','PUT'].includes(req.method)&&req.body?.status==='confirmed')return res.status(400).json({error:'Use the booking acceptance action to confirm a reservation and verify its submitted payment.'});
   if(['PATCH','PUT'].includes(req.method)&&req.body?.status==='rejected')return res.status(400).json({error:'Use the booking rejection action and provide a reason.'});
-  if(['PATCH','PUT'].includes(req.method)&&req.body?.status==='completed'){
-   await synchronizeBookingStatuses();
-   const bookingId=String(req.query.id||'');
-   const [rows]=await pool.query('SELECT status FROM bookings WHERE id=? LIMIT 1',[bookingId]);
-   if(rows[0]?.status!=='confirmed')return res.status(409).json({error:'Only an active confirmed reservation can be marked completed.'});
-  }
+  if(['PATCH','PUT'].includes(req.method)&&req.body?.status==='completed')return res.status(400).json({error:'Use the reservation completion action so any remaining balance can be confirmed.'});
   const modifiesDamageFee=['additional_fee_amount','additional_fee_reason','additional_fee_items','additional_fee_status'].some((field)=>Object.prototype.hasOwnProperty.call(req.body||{},field));
   if(['PATCH','PUT'].includes(req.method)&&entity==='Booking'&&modifiesDamageFee){
    if(!isAdmin(req.user))return res.status(403).json({error:'Only resort administrators can add or update a damage fee.'});

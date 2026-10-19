@@ -30,10 +30,11 @@ async function synchronizeBookingStatuses() {
     }
 
     const [paidBookings] = await connection.query(
-      "SELECT id,booking_reference,customer_email,package_name,DATE_FORMAT(booking_date,'%Y-%m-%d') AS booking_date,tour_type FROM bookings WHERE status='confirmed' AND payment_status='paid' AND booking_date<=? FOR UPDATE",
+      "SELECT id,booking_reference,customer_email,package_name,rebooking_additional_payment_amount,rebooking_additional_payment_paid_at,DATE_FORMAT(booking_date,'%Y-%m-%d') AS booking_date,tour_type FROM bookings WHERE status='confirmed' AND payment_status='paid' AND booking_date<=? FOR UPDATE",
       [today]
     );
     completed = paidBookings.filter((booking) => {
+      if (Number(booking.rebooking_additional_payment_amount || 0) > 0 && !booking.rebooking_additional_payment_paid_at) return false;
       const bookingDate = String(booking.booking_date || '').slice(0, 10);
       const endTime = getBookingEndDateTime(bookingDate, booking.tour_type);
       return endTime && endTime <= currentTime;
@@ -41,7 +42,7 @@ async function synchronizeBookingStatuses() {
     if (completed.length) {
       const placeholders = completed.map(() => '?').join(',');
       await connection.query(
-        `UPDATE bookings SET status='completed',updated_date=NOW() WHERE status='confirmed' AND payment_status='paid' AND id IN (${placeholders})`,
+        `UPDATE bookings SET status='completed',updated_date=NOW() WHERE status='confirmed' AND payment_status='paid' AND (COALESCE(rebooking_additional_payment_amount,0)<=0 OR rebooking_additional_payment_paid_at IS NOT NULL) AND id IN (${placeholders})`,
         completed.map((booking) => booking.id)
       );
     }

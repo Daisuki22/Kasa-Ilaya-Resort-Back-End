@@ -238,6 +238,8 @@ CREATE TABLE `bookings` (
   `rebooking_requested_package_name` varchar(191) DEFAULT NULL,
   `rebooking_requested_total_amount` decimal(12,2) DEFAULT NULL,
   `rebooking_additional_payment_amount` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `rebooking_additional_payment_paid_at` datetime DEFAULT NULL,
+  `rebooking_additional_payment_paid_by` varchar(191) DEFAULT NULL,
   `rebooking_reason` text DEFAULT NULL,
   `rebooking_requested_at` datetime DEFAULT NULL,
   `rebooking_resolved_at` datetime DEFAULT NULL,
