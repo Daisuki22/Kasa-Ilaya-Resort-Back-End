@@ -38,6 +38,9 @@ async function ensureRuntimeSchema(){
     await addColumnIfMissing('bookings','rebooking_additional_payment_paid_at','rebooking_additional_payment_paid_at DATETIME NULL');
     await addColumnIfMissing('bookings','rebooking_additional_payment_paid_by','rebooking_additional_payment_paid_by VARCHAR(191) NULL');
   }
+  if(await tableExists('activity_logs')){
+    await addColumnIfMissing('activity_logs','actor_role','actor_role VARCHAR(32) NULL AFTER user_name');
+  }
   if(await tableExists('notifications')){
     await addColumnIfMissing('notifications','actor_name','actor_name VARCHAR(191) NULL AFTER entity_id');
     await addColumnIfMissing('notifications','actor_profile_image_url','actor_profile_image_url VARCHAR(1024) NULL AFTER actor_name');
