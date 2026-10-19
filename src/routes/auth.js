@@ -466,6 +466,64 @@ router.post('/', async (req, res, next) => {
     const isGoogleRedirectPayload = Boolean(p.credential && p.g_csrf_token);
     const action = req.query.action || (isGoogleRedirectPayload ? 'google-login' : '');
 
+    if (action === 'admin-create-account') {
+      if (!req.user) return res.status(401).json({ error: 'Not authenticated.' });
+      const actorRole = req.user.role || req.user.app_role;
+      if (!['admin', 'super_admin'].includes(actorRole)) {
+        return res.status(403).json({ error: 'Only resort administrators can create administrator accounts.' });
+      }
+
+      const role = String(p.role || '').trim();
+      if (!['admin', 'super_admin'].includes(role)) {
+        return res.status(422).json({ error: 'Choose Admin or Super Admin for this account.' });
+      }
+      if (role === 'super_admin' && actorRole !== 'super_admin') {
+        return res.status(403).json({ error: 'Only a super admin can create another super admin account.' });
+      }
+
+      const fullName = String(p.full_name || '').trim().slice(0, 191);
+      const email = String(p.email || '').trim().toLowerCase();
+      const phone = String(p.phone || '').trim();
+      const password = String(p.password || '');
+      if (!fullName || !email || !phone || !password) {
+        return res.status(422).json({ error: 'Name, email, phone number, and a password are required.' });
+      }
+      if (email.length > 191) return res.status(422).json({ error: 'Email address must be 191 characters or fewer.' });
+      if (!emailOk(email)) return res.status(422).json({ error: 'Please enter a valid email address.' });
+      if (!phoneOk(phone)) return res.status(422).json({ error: 'Please enter a valid Philippine mobile number.' });
+      if (!isStrongPassword(password)) {
+        return res.status(422).json({ error: 'Password must be at least 10 characters and include an uppercase letter, lowercase letter, number, and special character.' });
+      }
+      if (await findUserByEmail(email)) return res.status(409).json({ error: 'An account with that email already exists.' });
+
+      const userId = id('user');
+      const createdAt = now();
+      const passwordHash = await bcrypt.hash(password, 12);
+      try {
+        await pool.query(
+          `INSERT INTO users
+           (id,created_date,updated_date,email,full_name,birth_date,phone,role,password_hash,disabled,is_verified,app_id,is_service,app_role)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [userId, createdAt, createdAt, email, fullName, null, phone.replace(/\D/g, ''), role, passwordHash, 0, 1, 'local-kasa-ilaya', 0, role]
+        );
+      } catch (error) {
+        if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'An account with that email already exists.' });
+        throw error;
+      }
+
+      try {
+        await pool.query(
+          `INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details)
+           VALUES (?,?,?,?,?,?,?,?,?)`,
+          [id('activitylog'), createdAt, createdAt, req.user.email || null, req.user.full_name || 'Administrator', role === 'super_admin' ? 'Created Super Admin Account' : 'Created Admin Account', 'User', userId, `Created ${role === 'super_admin' ? 'super admin' : 'admin'} account for ${email}.`]
+        );
+      } catch (error) {
+        console.error('Administrator account creation audit log failed', { userId, code: error.code });
+      }
+
+      return res.status(201).json({ success: true, id: userId, email, full_name: fullName, role, app_role: role });
+    }
+
     if (action === 'revoke-session') {
       if (!req.user || !req.authSessionId) return res.status(401).json({ error: 'Not authenticated.' });
       const sessionId = String(p.session_id || '').trim();
