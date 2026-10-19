@@ -15,7 +15,7 @@ const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,calendarDaysUntil,dateKeyFromDate,
 const BOOKING_SCHEDULE_LOCK='kasa_ilaya_booking_schedule';
 const MAP={
  ActivityLog:{table:'activity_logs',fields:['id','created_date','updated_date','user_email','user_name','actor_role','action','entity_type','entity_id','details']},
- Booking:{table:'bookings',fields:['id','created_date','updated_date','booking_reference','package_id','package_name','tour_type','booking_date','guest_count','included_guest_count','customer_user_id','customer_name','customer_email','customer_phone','special_requests','total_amount','reservation_fee_amount','payment_type','payment_amount_due','payment_mode','payment_number','payment_reference_number','payment_qr_code_id','payment_qr_code_label','receipt_url','payment_proof_review','payment_proof_fingerprint','payment_proof_ocr_provider','payment_proof_ocr_amount','payment_proof_ocr_reference','payment_proof_ocr_date','payment_proof_ocr_confidence','terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','status','approved_by','approved_at','rejected_by','rejected_at','rejection_reason','payment_status','additional_fee_amount','additional_fee_reason','additional_fee_items','additional_fee_status','additional_fee_paid_at','additional_fee_paid_by','rebooking_status','rebooking_original_date','rebooking_requested_date','rebooking_reason','rebooking_requested_at','rebooking_resolved_at','rebooking_resolution_note','rebooking_count'],json:['additional_fee_items'],numeric:['included_guest_count']},
+ Booking:{table:'bookings',fields:['id','created_date','updated_date','booking_reference','package_id','package_name','tour_type','booking_date','guest_count','included_guest_count','customer_user_id','customer_name','customer_email','customer_phone','special_requests','total_amount','reservation_fee_amount','payment_type','payment_amount_due','payment_mode','payment_number','payment_reference_number','payment_qr_code_id','payment_qr_code_label','receipt_url','payment_proof_review','payment_proof_fingerprint','payment_proof_ocr_provider','payment_proof_ocr_amount','payment_proof_ocr_reference','payment_proof_ocr_date','payment_proof_ocr_confidence','terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','status','approved_by','approved_at','rejected_by','rejected_at','rejection_reason','payment_status','additional_fee_amount','additional_fee_reason','additional_fee_items','additional_fee_status','additional_fee_paid_at','additional_fee_paid_by','rebooking_status','rebooking_original_date','rebooking_requested_date','rebooking_requested_package_id','rebooking_requested_package_name','rebooking_requested_total_amount','rebooking_additional_payment_amount','rebooking_reason','rebooking_requested_at','rebooking_resolved_at','rebooking_resolution_note','rebooking_count'],json:['additional_fee_items'],numeric:['included_guest_count','rebooking_requested_total_amount','rebooking_additional_payment_amount']},
  FoundItem:{table:'found_items',fields:['id','created_date','updated_date','item_name','description','date_found','location_found','found_by','status','image_url','claimed_guest_name','claimed_contact','claimed_reservation_id','proof_of_ownership','released_by','date_claimed','is_active']},
  LostItemReport:{table:'lost_item_reports',fields:['id','created_date','updated_date','guest_name','reservation_number','item_lost','description','date_lost','contact_number','email','status','matched_item_id']},
  Package:{table:'packages',fields:['id','created_date','updated_date','name','description','tour_type','price','day_tour_price','night_tour_price','twenty_two_hour_price','max_guests','inclusions','gallery_images','image_url','is_active'],json:['inclusions','gallery_images'],bool:['is_active'],numeric:['price','day_tour_price','night_tour_price','twenty_two_hour_price','max_guests']},
@@ -76,13 +76,35 @@ async function rescheduleBooking(req,res){
   phase='validate_schedule_availability';
   const available=await databaseScheduleIsAvailable(connection,requestedDate,booking.tour_type,booking.id,true);
   if(!available)throw httpError('The selected schedule is unavailable. Please choose another date or time.',409,'BOOKING_SCHEDULE_UNAVAILABLE');
+  let nextPackageId=booking.package_id;
+  let nextPackageName=booking.package_name;
+  let nextTotalAmount=Number(booking.total_amount||0);
+  let additionalPaymentAmount=0;
+  let nextIncludedGuestCount=booking.included_guest_count;
+  if((booking.rebooking_status||'none')==='pending'&&booking.rebooking_requested_package_id&&String(booking.rebooking_requested_package_id)!==String(booking.package_id)){
+   phase='validate_requested_package';
+   const [packageRows]=await connection.query('SELECT * FROM packages WHERE id=? AND is_active=1 FOR UPDATE',[booking.rebooking_requested_package_id]);
+   const nextPackage=packageRows[0];
+   if(!nextPackage)throw httpError('The requested package is no longer available. Decline this request and ask the guest to submit a new one.',409);
+   const quote=quoteBooking({packageRecord:nextPackage,tourType:booking.tour_type,guestCount:booking.guest_count,paymentType:booking.payment_type||'full_payment'});
+   if(booking.rebooking_requested_total_amount===null||Math.round(Number(booking.rebooking_requested_total_amount)*100)!==Math.round(quote.total_amount*100))throw httpError('The requested package price changed after submission. Decline this request and ask the guest to submit it again.',409);
+   const expectedAdditional=Math.max(0,Number((quote.total_amount-Number(booking.total_amount||0)).toFixed(2)));
+   if(Math.round(Number(booking.rebooking_additional_payment_amount||0)*100)!==Math.round(expectedAdditional*100))throw httpError('The package price difference changed. Decline this request and ask the guest to submit it again.',409);
+   nextPackageId=nextPackage.id;
+   nextPackageName=nextPackage.name;
+   nextTotalAmount=Math.max(Number(booking.total_amount||0),quote.total_amount);
+   additionalPaymentAmount=expectedAdditional;
+   nextIncludedGuestCount=Math.max(1,Math.trunc(Number(nextPackage.max_guests)||1));
+  }else if((booking.rebooking_status||'none')==='pending'){
+   additionalPaymentAmount=Number(booking.rebooking_additional_payment_amount||0);
+  }
   const originalDate=dateOnly(booking.booking_date);
   const resolutionNote=note||(admin?'Rescheduled by resort administrator.':'Rescheduled by guest.');
   phase='update_booking';
-  await connection.query("UPDATE bookings SET booking_date=?,rebooking_status='approved',rebooking_original_date=?,rebooking_requested_date=?,rebooking_requested_at=NOW(),rebooking_resolved_at=NOW(),rebooking_resolution_note=?,rebooking_count=COALESCE(rebooking_count,0)+1,updated_date=NOW() WHERE id=?",[requestedDate,originalDate,requestedDate,resolutionNote,booking.id]);
+  await connection.query("UPDATE bookings SET booking_date=?,package_id=?,package_name=?,total_amount=?,included_guest_count=?,rebooking_additional_payment_amount=?,rebooking_status='approved',rebooking_original_date=?,rebooking_requested_date=?,rebooking_requested_at=NOW(),rebooking_resolved_at=NOW(),rebooking_resolution_note=?,rebooking_count=COALESCE(rebooking_count,0)+1,updated_date=NOW() WHERE id=?",[requestedDate,nextPackageId,nextPackageName,nextTotalAmount,nextIncludedGuestCount,additionalPaymentAmount,originalDate,requestedDate,resolutionNote,booking.id]);
   const oldTime=getTourTime(booking.tour_type);
   const newTime=getTourTime(booking.tour_type);
-  const details=`${admin?'Admin':'Customer'} rescheduled ${booking.booking_reference} (booking ${booking.id}) from ${originalDate} ${oldTime.label} to ${requestedDate} ${newTime.label}. Package: ${booking.package_name}. Guests: ${booking.guest_count}. Payment status preserved: ${booking.payment_status}.`;
+  const details=`${admin?'Admin':'Customer'} rescheduled ${booking.booking_reference} (booking ${booking.id}) from ${originalDate} ${oldTime.label} to ${requestedDate} ${newTime.label}. Package: ${booking.package_name} to ${nextPackageName}. Guests: ${booking.guest_count}. Additional package payment due: ${additionalPaymentAmount.toFixed(2)}. Existing payment status preserved: ${booking.payment_status}.`;
   phase='write_activity_log';
   await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Guest','Reservation Rescheduled','Booking',booking.id,details]);
   phase='reload_booking';
@@ -116,8 +138,9 @@ async function requestReschedule(req,res){
  const bookingId=String(req.query.id||'');
  const body=req.body||{};
  if(!bookingId)return res.status(422).json({error:'Missing booking id.'});
- if(Object.keys(body).some(key=>!['booking_date','note'].includes(key))||!isValidDateKey(body.booking_date))return res.status(422).json({error:'A valid requested booking date is required.'});
+ if(Object.keys(body).some(key=>!['booking_date','package_id','note'].includes(key))||!isValidDateKey(body.booking_date))return res.status(422).json({error:'A valid requested booking date is required.'});
  const note=typeof body.note==='string'?body.note.trim().slice(0,500):'';
+ const requestedPackageId=String(body.package_id||'').trim().slice(0,64);
  let connection;
  let lockAcquired=false;
  let transactionStarted=false;
@@ -138,7 +161,7 @@ async function requestReschedule(req,res){
   if(String(booking.customer_email||'').toLowerCase()!==String(req.user.email||'').toLowerCase())throw httpError('You are not authorized to request a schedule change.',403);
   if(!['pending','confirmed'].includes(booking.status))throw httpError('Only an active reservation can request rescheduling.',409);
   if((booking.rebooking_status||'none')==='pending'){
-   if(dateOnly(booking.rebooking_requested_date)===body.booking_date){
+   if(dateOnly(booking.rebooking_requested_date)===body.booking_date&&String(booking.rebooking_requested_package_id||booking.package_id||'')===String(requestedPackageId||booking.package_id||'')){
     await connection.commit();
     transactionStarted=false;
     return res.json({success:true,data:deserialize(MAP.Booking,booking),already_requested:true});
@@ -157,13 +180,28 @@ async function requestReschedule(req,res){
   if(!getBookingStartDateTime(body.booking_date,booking.tour_type)||!getTourTime(booking.tour_type))throw httpError('This reservation has an invalid tour schedule.',422);
   phase='validate_schedule_availability';
   if(!await databaseScheduleIsAvailable(connection,body.booking_date,booking.tour_type,booking.id,true))throw httpError('The selected schedule is unavailable. Please choose another date or time.',409,'BOOKING_SCHEDULE_UNAVAILABLE');
+  let nextPackageId=booking.package_id||null;
+  let nextPackageName=booking.package_name||null;
+  let requestedTotalAmount=Number(booking.total_amount||0);
+  let additionalPaymentAmount=0;
+  if(requestedPackageId&&String(requestedPackageId)!==String(booking.package_id||'')){
+   phase='validate_requested_package';
+   const [packageRows]=await connection.query('SELECT * FROM packages WHERE id=? AND is_active=1 FOR UPDATE',[requestedPackageId]);
+   const nextPackage=packageRows[0];
+   if(!nextPackage)throw httpError('The selected package is unavailable. Please choose an active package.',422);
+   const quote=quoteBooking({packageRecord:nextPackage,tourType:booking.tour_type,guestCount:booking.guest_count,paymentType:booking.payment_type||'full_payment'});
+   nextPackageId=nextPackage.id;
+   nextPackageName=nextPackage.name;
+   requestedTotalAmount=quote.total_amount;
+   additionalPaymentAmount=Math.max(0,Number((quote.total_amount-Number(booking.total_amount||0)).toFixed(2)));
+  }
   phase='save_request';
-  await connection.query("UPDATE bookings SET rebooking_status='pending',rebooking_original_date=?,rebooking_requested_date=?,rebooking_reason=?,rebooking_requested_at=NOW(),rebooking_resolved_at=NULL,rebooking_resolution_note=NULL,updated_date=NOW() WHERE id=?",[originalDate,body.booking_date,note||null,booking.id]);
+  await connection.query("UPDATE bookings SET rebooking_status='pending',rebooking_original_date=?,rebooking_requested_date=?,rebooking_requested_package_id=?,rebooking_requested_package_name=?,rebooking_requested_total_amount=?,rebooking_additional_payment_amount=?,rebooking_reason=?,rebooking_requested_at=NOW(),rebooking_resolved_at=NULL,rebooking_resolution_note=NULL,updated_date=NOW() WHERE id=?",[originalDate,body.booking_date,nextPackageId,nextPackageName,requestedTotalAmount,additionalPaymentAmount,note||null,booking.id]);
   const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);
   phase='commit_transaction';
   await connection.commit();
   transactionStarted=false;
-  await notifySafely({email:booking.customer_email,eventKey:`booking:${booking.id}:reschedule-requested:${body.booking_date}`,title:'Your reschedule request was submitted',description:`Your request to change the booking date from ${originalDate} to ${body.booking_date} is awaiting resort review.`,link:'/MyBookings',entityId:booking.id});
+  await notifySafely({email:booking.customer_email,eventKey:`booking:${booking.id}:reschedule-requested:${body.booking_date}:${nextPackageId||'same-package'}`,title:'Your reschedule request was submitted',description:`Your request to change the date from ${originalDate} to ${body.booking_date} and package to ${nextPackageName||'the current package'} is awaiting resort review.${additionalPaymentAmount>0?` Additional payment if approved: PHP ${additionalPaymentAmount.toFixed(2)}.`:''}`,link:'/MyBookings',entityId:booking.id});
   return res.json({success:true,data:deserialize(MAP.Booking,updatedRows[0])});
  }catch(error){
   if(transactionStarted)try{await connection.rollback();}catch{}
