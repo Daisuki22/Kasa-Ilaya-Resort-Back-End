@@ -3,6 +3,7 @@ const config = require('../config/env');
 const { id, now } = require('../utils');
 const { getBookingStartDateTime, dateKeyFromDate, addDateKeyDays, calendarDaysUntil } = require('./bookingSchedule');
 const { sendMail } = require('./mail');
+const path = require('node:path');
 
 async function createNotification({ email, eventKey, title, description, link, entityId, actorName, actorProfileImageUrl }) {
   if (!email || !eventKey) return false;
@@ -57,6 +58,122 @@ function escapeHtml(value) {
   return String(value || '').replace(/[&<>"']/g, (character) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   })[character]);
+}
+
+async function loadBookingReceiptAttachment(booking) {
+  const pathname = String(booking?.receipt_url || '').split(/[?#]/, 1)[0];
+  const match = pathname.match(/(?:^|\/)uploads\/(.+)$/i);
+  if (!match) return [];
+
+  try {
+    const fileUrl = `/uploads/${decodeURIComponent(match[1])}`;
+    const [rows] = await pool.query(
+      'SELECT mime_type,image_data FROM payment_proof_uploads WHERE file_url=? LIMIT 1',
+      [fileUrl]
+    );
+    const image = rows[0]?.image_data;
+    if (!image) return [];
+    return [{
+      filename: path.basename(fileUrl),
+      content: Buffer.from(image),
+      contentType: rows[0].mime_type || 'application/octet-stream',
+      contentDisposition: 'attachment',
+    }];
+  } catch (error) {
+    console.error('Booking payment proof could not be attached to email', { bookingId: booking?.id, code: error.code });
+    return [];
+  }
+}
+
+function bookingEmailHtml(booking, { admin = false, receiptAttached = false } = {}) {
+  const tourLabels = {
+    day_tour: 'Day Tour (8 AM – 6 PM)',
+    night_tour: 'Night Tour (6 PM – 6 AM)',
+    '22_hours': '22 Hours (6 PM – 4 PM next day)',
+  };
+  const dateValue = booking.booking_date instanceof Date
+    ? booking.booking_date.toISOString().slice(0, 10)
+    : String(booking.booking_date || '').slice(0, 10);
+  const parsedDate = /^\d{4}-\d{2}-\d{2}$/.test(dateValue) ? new Date(`${dateValue}T12:00:00+08:00`) : null;
+  const displayDate = parsedDate && !Number.isNaN(parsedDate.getTime())
+    ? new Intl.DateTimeFormat('en-PH', { timeZone: 'Asia/Manila', dateStyle: 'full' }).format(parsedDate)
+    : dateValue || 'To be confirmed';
+  const currency = (value) => `PHP ${Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const origin = String(config.frontendUrl || '').split(',')[0].trim().replace(/\/$/, '');
+  const bookingsUrl = origin ? `${origin}/MyBookings` : '/MyBookings';
+  const rows = [
+    ['Booking reference', booking.booking_reference || booking.id],
+    ['Guest', booking.customer_name || 'Guest'],
+    ...(admin ? [['Email', booking.customer_email || ''], ['Phone', booking.customer_phone || '']] : []),
+    ['Package', booking.package_name || 'Resort booking'],
+    ['Tour', tourLabels[booking.tour_type] || booking.tour_type || 'To be confirmed'],
+    ['Reservation date', displayDate],
+    ['Guests', `${Number(booking.guest_count || 0)} (included: ${Number(booking.included_guest_count || 0)})`],
+    ['Booking status', 'Pending resort confirmation'],
+    ['Payment status', booking.payment_status === 'pending_verification' ? 'Payment proof submitted; pending review' : 'Awaiting payment'],
+    ['Payment method', booking.payment_mode || booking.payment_qr_code_label || 'Not provided'],
+    ...(booking.payment_reference_number ? [['Payment reference', booking.payment_reference_number]] : []),
+    ['Amount submitted', currency(booking.payment_amount_due ?? booking.reservation_fee_amount)],
+    ['Total reservation amount', currency(booking.total_amount)],
+    ['Reservation fee (15%)', currency(booking.reservation_fee_amount)],
+  ];
+  const detailRows = rows.map(([label, value], index) => `
+    <tr style="background:${index % 2 ? '#ffffff' : '#f5f2eb'}">
+      <td style="padding:10px 12px;color:#61716d;width:40%">${escapeHtml(label)}</td>
+      <td style="padding:10px 12px;font-weight:600;color:#263735">${escapeHtml(value)}</td>
+    </tr>`).join('');
+  const specialRequests = booking.special_requests
+    ? `<p><strong>Special requests:</strong><br>${escapeHtml(booking.special_requests).replace(/\n/g, '<br>')}</p>`
+    : '';
+  const receiptNote = booking.receipt_url
+    ? `<p>${receiptAttached ? 'The payment receipt you submitted is attached to this email.' : 'Your payment receipt was submitted with this reservation and is awaiting verification.'}</p>`
+    : '';
+
+  return `<p>Hello ${escapeHtml(booking.customer_name || 'Guest')},</p>
+    <p>${admin ? 'A new reservation was submitted and is awaiting resort review.' : 'We received your reservation request. It is pending resort confirmation; your booking is not confirmed yet.'}</p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:14px">${detailRows}</table>
+    ${specialRequests}${receiptNote}
+    ${admin ? '' : `<p><a href="${escapeHtml(bookingsUrl)}" style="display:inline-block;background:#0d5558;color:#fff;text-decoration:none;padding:11px 18px;border-radius:7px;font-weight:700">View reservation</a></p>`}
+    <p style="font-size:13px;color:#61716d">${admin ? 'Review the submitted payment proof and reservation in the admin dashboard.' : 'We will email you again when the resort updates your booking or payment status.'}</p>`;
+}
+
+async function sendBookingSubmissionEmails(booking) {
+  const attachments = await loadBookingReceiptAttachment(booking);
+  const receiptAttached = attachments.length > 0;
+  const customer = await sendMail(
+    booking.customer_email,
+    `Reservation received - ${booking.booking_reference || booking.id} | Kasa Ilaya Resort`,
+    bookingEmailHtml(booking, { receiptAttached }),
+    'booking_confirmation',
+    attachments
+  );
+
+  let adminEmails = [];
+  try {
+    const [admins] = await pool.query(
+      "SELECT email FROM users WHERE disabled=0 AND role IN ('admin','super_admin') AND email IS NOT NULL"
+    );
+    adminEmails = admins.map((entry) => String(entry.email || '').trim().toLowerCase());
+  } catch (error) {
+    console.error('Booking email administrators could not be loaded', { bookingId: booking.id, code: error.code });
+  }
+  const recipients = [...new Set([config.mail.admin, ...adminEmails]
+    .map((email) => String(email || '').trim().toLowerCase())
+    .filter((email) => email && email !== String(booking.customer_email || '').toLowerCase()))];
+  const adminResults = await Promise.all(recipients.map((email) => sendMail(
+    email,
+    `New reservation - ${booking.booking_reference || booking.id} | Kasa Ilaya Resort`,
+    bookingEmailHtml(booking, { admin: true, receiptAttached }),
+    'new_booking_admin',
+    attachments
+  )));
+
+  if (!customer.sent) {
+    console.error('Booking confirmation email was not delivered', { bookingId: booking.id, error: customer.error });
+  }
+  const failedAdmins = adminResults.filter((result) => !result.sent).length;
+  if (failedAdmins) console.error('New booking email was not delivered to all admin recipients', { bookingId: booking.id, failed: failedAdmins });
+  return { customerEmailSent: customer.sent, customerEmailError: customer.error || '' };
 }
 
 async function sendUpcomingBookingReminders() {
@@ -195,6 +312,7 @@ module.exports = {
   createNotification,
   notifySafely,
   notifyBookingAdmins,
+  sendBookingSubmissionEmails,
   sendUpcomingBookingReminders,
   sendBookingPolicyReminders,
   sendPendingPaymentVerificationReminders,

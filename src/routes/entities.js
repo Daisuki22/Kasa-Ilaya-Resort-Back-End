@@ -5,7 +5,7 @@ const {classifyPaymentProvider,createEmptyReceiptOcr,MIN_CONFIDENT_VERIFICATION,
 const fs=require('node:fs');
 const path=require('node:path');
 const {uploadsDir,bundledUploadsDir}=require('../config/uploads');
-const {createNotification,notifySafely,notifyBookingAdmins}=require('../services/notifications');
+const {createNotification,notifySafely,notifyBookingAdmins,sendBookingSubmissionEmails}=require('../services/notifications');
 const {quoteBooking}=require('../services/bookingPricing');
 const {findExistingBookingSubmission}=require('../services/bookingSubmission');
 const {validateRequiredBookingPayment}=require('../services/bookingPaymentValidation');
@@ -622,7 +622,10 @@ async function createBooking(req,res,next){
   stage='commit_transaction';
   await connection.commit();
   transactionStarted=false;
-  return res.status(201).json(deserialize(cfg,rows[0]||record));
+  const createdBooking=deserialize(cfg,rows[0]||record);
+  let emailDelivery={customerEmailSent:false,customerEmailError:'Booking was saved, but the email notification could not be delivered.'};
+  try{emailDelivery=await sendBookingSubmissionEmails(createdBooking);}catch(error){console.error('Booking email notification failed',{requestId:req.requestId,bookingId:createdBooking.id,code:error.code});}
+  return res.status(201).json({...createdBooking,email_sent:Boolean(emailDelivery.customerEmailSent),email_error:emailDelivery.customerEmailError||''});
  }catch(error){
   error.bookingStage=stage;
   error.bookingContext=bookingLogContext;

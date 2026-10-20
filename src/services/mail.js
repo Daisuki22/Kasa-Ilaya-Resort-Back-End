@@ -79,7 +79,8 @@ async function sendMail(
   to,
   subject,
   html,
-  purpose = 'main'
+  purpose = 'main',
+  attachments = []
 ) {
   const setup = getTransporter();
 
@@ -96,7 +97,8 @@ async function sendMail(
       from: `"${config.mail.fromName || 'Kasa Ilaya Resort'}" <${config.mail.from}>`,
       to,
       subject,
-      html: renderBrandedEmail(subject, html)
+      html: renderBrandedEmail(subject, html),
+      attachments: Array.isArray(attachments) ? attachments : []
     });
 
     console.log(
