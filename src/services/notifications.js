@@ -86,41 +86,43 @@ async function loadBookingReceiptAttachment(booking) {
 }
 
 function bookingEmailHtml(booking, { admin = false, receiptAttached = false } = {}) {
-  const tourLabels = {
-    day_tour: 'Day Tour (7 AM – 5 PM)',
-    night_tour: 'Night Tour (7 PM – 5 AM next day)',
-    '22_hours': '22 Hours (7 PM – 5 PM next day)',
-  };
+  const additionalGuestRate = 150;
   const dateValue = booking.booking_date instanceof Date
     ? booking.booking_date.toISOString().slice(0, 10)
     : String(booking.booking_date || '').slice(0, 10);
   const parsedDate = /^\d{4}-\d{2}-\d{2}$/.test(dateValue) ? new Date(`${dateValue}T12:00:00+08:00`) : null;
-  const displayDate = parsedDate && !Number.isNaN(parsedDate.getTime())
-    ? new Intl.DateTimeFormat('en-PH', { timeZone: 'Asia/Manila', dateStyle: 'full' }).format(parsedDate)
+  const checkInDate = parsedDate && !Number.isNaN(parsedDate.getTime())
+    ? new Intl.DateTimeFormat('en-PH', { timeZone: 'Asia/Manila', month: 'short', day: 'numeric', year: 'numeric' }).format(parsedDate)
     : dateValue || 'To be confirmed';
-  const currency = (value) => `PHP ${Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const currency = (value) => `₱${Number(value || 0).toLocaleString('en-PH', { maximumFractionDigits: 2 })}`;
   const origin = String(config.frontendUrl || '').split(',')[0].trim().replace(/\/$/, '');
   const bookingsUrl = origin ? `${origin}/MyBookings` : '/MyBookings';
+  const logoUrl = origin ? `${origin}/img/kasa-ilaya-main-logo.webp` : '';
+  const guestCount = Number(booking.guest_count || 0);
+  const includedGuestCount = Number(booking.included_guest_count || 0);
+  const additionalGuestFee = Math.max(guestCount - includedGuestCount, 0) * additionalGuestRate;
+  const totalAmount = Number(booking.total_amount || 0);
+  const basePackagePrice = Math.max(totalAmount - additionalGuestFee, 0);
+  const paymentTypes = { downpayment: 'Downpayment', full_payment: 'Full Payment' };
   const rows = [
-    ['Booking reference', booking.booking_reference || booking.id],
-    ['Guest', booking.customer_name || 'Guest'],
-    ...(admin ? [['Email', booking.customer_email || ''], ['Phone', booking.customer_phone || '']] : []),
+    ['Reference', booking.booking_reference || booking.id],
     ['Package', booking.package_name || 'Resort booking'],
-    ['Tour', tourLabels[booking.tour_type] || booking.tour_type || 'To be confirmed'],
-    ['Reservation date', displayDate],
-    ['Guests', `${Number(booking.guest_count || 0)} (included: ${Number(booking.included_guest_count || 0)})`],
-    ['Booking status', 'Pending resort confirmation'],
-    ['Payment status', booking.payment_status === 'pending_verification' ? 'Payment proof submitted; pending review' : 'Awaiting payment'],
-    ['Payment method', booking.payment_mode || booking.payment_qr_code_label || 'Not provided'],
-    ...(booking.payment_reference_number ? [['Payment reference', booking.payment_reference_number]] : []),
-    ['Amount submitted', currency(booking.payment_amount_due ?? booking.reservation_fee_amount)],
-    ['Total reservation amount', currency(booking.total_amount)],
-    ['Reservation fee (15%)', currency(booking.reservation_fee_amount)],
+    ...(admin ? [['Guest', booking.customer_name || 'Guest'], ['Email', booking.customer_email || ''], ['Phone', booking.customer_phone || '']] : []),
+    ['Fixed pax included', `${includedGuestCount} guests`],
+    ['Check-in', checkInDate],
+    ['Base Package Price', currency(basePackagePrice)],
+    ['Additional Guest Fee', currency(additionalGuestFee)],
+    ['Total', currency(totalAmount)],
+    ['Reservation Fee', `${currency(booking.reservation_fee_amount ?? totalAmount * 0.15)} (15%)`],
+    ['Payment Type', paymentTypes[booking.payment_type] || 'Downpayment'],
+    ['Amount Submitted', currency(booking.payment_amount_due ?? booking.reservation_fee_amount)],
+    ['Mode of Payment', booking.payment_mode || booking.payment_qr_code_label || 'Not provided'],
+    ['Payment Reference', booking.payment_reference_number || 'Not provided'],
   ];
-  const detailRows = rows.map(([label, value], index) => `
-    <tr style="background:${index % 2 ? '#ffffff' : '#f5f2eb'}">
-      <td style="padding:10px 12px;color:#61716d;width:40%">${escapeHtml(label)}</td>
-      <td style="padding:10px 12px;font-weight:600;color:#263735">${escapeHtml(value)}</td>
+  const detailRows = rows.map(([label, value]) => `
+    <tr>
+      <td style="padding:5px 0;color:#40515a;width:55%;vertical-align:top">${escapeHtml(label)}</td>
+      <td align="right" style="padding:5px 0;font-weight:500;color:#17242c;vertical-align:top">${escapeHtml(value)}</td>
     </tr>`).join('');
   const specialRequests = booking.special_requests
     ? `<p><strong>Special requests:</strong><br>${escapeHtml(booking.special_requests).replace(/\n/g, '<br>')}</p>`
@@ -129,9 +131,19 @@ function bookingEmailHtml(booking, { admin = false, receiptAttached = false } = 
     ? `<p>${receiptAttached ? 'The payment receipt you submitted is attached to this email.' : 'Your payment receipt was submitted with this reservation and is awaiting verification.'}</p>`
     : '';
 
-  return `<p>Hello ${escapeHtml(booking.customer_name || 'Guest')},</p>
-    <p>${admin ? 'A new reservation was submitted and is awaiting resort review.' : 'We received your reservation request. It is pending resort confirmation; your booking is not confirmed yet.'}</p>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:14px">${detailRows}</table>
+  return `<p style="margin:0 0 16px">Hello ${escapeHtml(booking.customer_name || 'Guest')}, ${admin ? 'a new reservation was submitted and is awaiting resort review.' : 'we received your reservation request. It is pending resort confirmation; your booking is not confirmed yet.'}</p>
+    <table role="presentation" align="center" width="100%" cellpadding="0" cellspacing="0" style="max-width:430px;border:1px solid #ddd6ca;border-radius:12px;border-collapse:separate;border-spacing:0;background:#fff">
+      <tr><td style="padding:18px 20px 14px;text-align:center">
+        ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" alt="Kasa Ilaya Resort logo" width="120" style="display:block;width:120px;max-width:100%;height:auto;margin:0 auto 8px">` : ''}
+        <div style="font-size:18px;line-height:1.3;font-weight:700;color:#111827">Kasa Ilaya Resort &amp; Event Place</div>
+        <div style="font-size:13px;line-height:1.5;color:#52616b">Sitio Pook na Munti<br>brgy. Kaong, Silang, Cavite</div>
+      </td></tr>
+      <tr><td style="padding:0 20px"><div style="border-top:1px dashed #d8d0c4"></div></td></tr>
+      <tr><td style="padding:12px 20px 18px">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:14px;line-height:1.45">${detailRows}</table>
+      </td></tr>
+    </table>
+    <p style="font-size:13px;color:#61716d;margin:14px 0 0">${admin ? 'Booking status: Pending resort confirmation. Payment proof is awaiting review.' : 'Please keep this email for your records. Your reservation is not confirmed until approved by the resort.'}</p>
     ${specialRequests}${receiptNote}
     ${admin ? '' : `<p><a href="${escapeHtml(bookingsUrl)}" style="display:inline-block;background:#0d5558;color:#fff;text-decoration:none;padding:11px 18px;border-radius:7px;font-weight:700">View reservation</a></p>`}
     <p style="font-size:13px;color:#61716d">${admin ? 'Review the submitted payment proof and reservation in the admin dashboard.' : 'We will email you again when the resort updates your booking or payment status.'}</p>`;
@@ -362,6 +374,7 @@ module.exports = {
   createNotification,
   notifySafely,
   notifyBookingAdmins,
+  bookingEmailHtml,
   sendBookingSubmissionEmails,
   sendBookingStatusEmail,
   sendUpcomingBookingReminders,
