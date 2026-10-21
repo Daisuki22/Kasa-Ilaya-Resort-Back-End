@@ -176,6 +176,56 @@ async function sendBookingSubmissionEmails(booking) {
   return { customerEmailSent: customer.sent, customerEmailError: customer.error || '' };
 }
 
+async function sendBookingStatusEmail(booking, status, reason = '') {
+  const normalizedStatus = String(status || '').toLowerCase();
+  if (!booking?.customer_email || !['cancelled', 'rejected'].includes(normalizedStatus)) {
+    return { sent: false, error: 'A guest email and a cancelled or rejected booking status are required.' };
+  }
+
+  const rejected = normalizedStatus === 'rejected';
+  const reference = booking.booking_reference || booking.id || 'your reservation';
+  const bookingDate = booking.booking_date instanceof Date
+    ? booking.booking_date.toISOString().slice(0, 10)
+    : String(booking.booking_date || '').slice(0, 10);
+  const parsedDate = /^\d{4}-\d{2}-\d{2}$/.test(bookingDate)
+    ? new Date(`${bookingDate}T12:00:00+08:00`)
+    : null;
+  const displayDate = parsedDate && !Number.isNaN(parsedDate.getTime())
+    ? new Intl.DateTimeFormat('en-PH', { timeZone: 'Asia/Manila', dateStyle: 'full' }).format(parsedDate)
+    : bookingDate || 'To be confirmed';
+  const origin = String(config.frontendUrl || '').split(',')[0].trim().replace(/\/$/, '');
+  const bookingsUrl = origin ? `${origin}/MyBookings` : '/MyBookings';
+  const detail = String(reason || booking.rejection_reason || '').trim();
+  const statusText = rejected ? 'was not accepted by the resort' : 'has been cancelled';
+  const detailHtml = rejected
+    ? `<p><strong>Reason:</strong> ${escapeHtml(detail || 'Please contact the resort for more information.')}</p>`
+    : detail
+      ? `<p>${escapeHtml(detail)}</p>`
+      : '<p>This cancellation has been recorded in your reservation.</p>';
+
+  const result = await sendMail(
+    booking.customer_email,
+    `${rejected ? 'Reservation update' : 'Reservation cancelled'} - ${reference} | Kasa Ilaya Resort`,
+    `<p>Hello ${escapeHtml(booking.customer_name || 'Guest')},</p>
+     <p>Your reservation <strong>${escapeHtml(reference)}</strong> ${statusText}.</p>
+     <p><strong>Package:</strong> ${escapeHtml(booking.package_name || 'Resort booking')}<br>
+     <strong>Reservation date:</strong> ${escapeHtml(displayDate)}</p>
+     ${detailHtml}
+     <p><a href="${escapeHtml(bookingsUrl)}" style="display:inline-block;background:#0d5558;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:7px;font-weight:bold;">View my bookings</a></p>
+     <p>If you have questions, please contact Kasa Ilaya Resort.</p>`,
+    rejected ? 'booking_rejected' : 'booking_cancelled'
+  );
+
+  if (!result.sent) {
+    console.error('Booking status email was not delivered', {
+      bookingId: booking.id,
+      status: normalizedStatus,
+      error: result.error,
+    });
+  }
+  return result;
+}
+
 async function sendUpcomingBookingReminders() {
   const date = addDateKeyDays(dateKeyFromDate(new Date()), 1);
   if (!date) return;
@@ -313,6 +363,7 @@ module.exports = {
   notifySafely,
   notifyBookingAdmins,
   sendBookingSubmissionEmails,
+  sendBookingStatusEmail,
   sendUpcomingBookingReminders,
   sendBookingPolicyReminders,
   sendPendingPaymentVerificationReminders,

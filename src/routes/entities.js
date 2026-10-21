@@ -5,7 +5,7 @@ const {classifyPaymentProvider,createEmptyReceiptOcr,MIN_CONFIDENT_VERIFICATION,
 const fs=require('node:fs');
 const path=require('node:path');
 const {uploadsDir,bundledUploadsDir}=require('../config/uploads');
-const {createNotification,notifySafely,notifyBookingAdmins,sendBookingSubmissionEmails}=require('../services/notifications');
+const {createNotification,notifySafely,notifyBookingAdmins,sendBookingSubmissionEmails,sendBookingStatusEmail}=require('../services/notifications');
 const {quoteBooking}=require('../services/bookingPricing');
 const {findExistingBookingSubmission}=require('../services/bookingSubmission');
 const {validateRequiredBookingPayment}=require('../services/bookingPaymentValidation');
@@ -273,6 +273,8 @@ async function cancelBooking(req,res){
   if(!updatedRows[0])throw new Error('Cancelled reservation could not be reloaded.');
   await connection.commit();
   transactionStarted=false;
+   void sendBookingStatusEmail(deserialize(MAP.Booking,updatedRows[0]),'cancelled')
+    .catch(error=>console.error('Booking cancellation email failed',{bookingId,code:error.code}));
   return res.json({success:true,data:deserialize(MAP.Booking,updatedRows[0])});
  }catch(error){
   if(transactionStarted)try{await connection.rollback();}catch{}
@@ -495,6 +497,8 @@ async function rejectBooking(req,res){
   const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);
   await connection.commit();
   transactionStarted=false;
+   void sendBookingStatusEmail(deserialize(MAP.Booking,updatedRows[0]),'rejected',reason)
+    .catch(error=>console.error('Booking rejection email failed',{bookingId:booking.id,code:error.code}));
   return res.json({success:true,data:deserialize(MAP.Booking,updatedRows[0])});
  }catch(error){
   if(transactionStarted)try{await connection.rollback();}catch{}

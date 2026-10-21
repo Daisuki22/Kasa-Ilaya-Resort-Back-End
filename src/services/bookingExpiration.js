@@ -1,6 +1,6 @@
 const { pool } = require('../config/database');
 const { dateKeyFromDate, getBookingEndDateTime } = require('./bookingSchedule');
-const { notifySafely } = require('./notifications');
+const { notifySafely, sendBookingStatusEmail } = require('./notifications');
 
 async function synchronizeBookingStatuses() {
   const currentTime = new Date();
@@ -14,7 +14,7 @@ async function synchronizeBookingStatuses() {
     await connection.beginTransaction();
     transactionStarted = true;
     const [rows] = await connection.query(
-      "SELECT id,booking_reference,customer_email,package_name,DATE_FORMAT(booking_date,'%Y-%m-%d') AS booking_date,tour_type FROM bookings WHERE status='pending' AND booking_date<? FOR UPDATE",
+      "SELECT id,booking_reference,customer_email,customer_name,package_name,DATE_FORMAT(booking_date,'%Y-%m-%d') AS booking_date,tour_type FROM bookings WHERE status='pending' AND booking_date<? FOR UPDATE",
       [today]
     );
     expired = rows.filter((booking) => {
@@ -66,6 +66,14 @@ async function synchronizeBookingStatuses() {
     link: '/MyBookings',
     entityId: booking.id,
   })));
+  await Promise.all(expired.map((booking) => sendBookingStatusEmail(
+    booking,
+    'cancelled',
+    'The reservation date passed before the resort could confirm this booking, so it was automatically cancelled.'
+  ).catch((error) => console.error('Expired booking cancellation email failed', {
+    bookingId: booking.id,
+    code: error.code,
+  }))));
   await Promise.all(completed.map((booking) => notifySafely({
     email: booking.customer_email,
     eventKey: `booking:${booking.id}:completed:${String(booking.booking_date).slice(0, 10)}`,
