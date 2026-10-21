@@ -64,7 +64,8 @@ const extractAmountDetails = (text) => {
     if (phpEquivalent !== null) break;
   }
 
-  const labeled = source.match(/(?:amount(?:\s+(?:sent|paid|received))?|total(?:\s+amount)?|sent|paid|received)\s*[:=\-]?\s*(PHP|₱|\$|€|£|¥)?\s*([\d,]+(?:\.\d{1,2})?)/iu);
+  // Maya labels an outgoing payment as "Sent money to" and displays the debit with a minus sign.
+  const labeled = source.match(/(?:amount(?:\s+(?:sent|paid|received))?|total(?:\s+amount)?|sent(?:\s+money\s+to)?|paid|received)\s*[:=\-]?\s*(?:[\u2212-]\s*)?(PHP|\u20b1|\$|\u20ac|\u00a3|\u00a5)?\s*([\d,]+(?:\.\d{1,2})?)/iu);
   if (labeled) {
     const marker = labeled[1];
     const normalizedMarker = String(marker || '').normalize('NFKC').trim().toUpperCase();
