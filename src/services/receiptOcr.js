@@ -36,7 +36,7 @@ const classifyPaymentProvider = (value) => {
 };
 
 const parseAmount = (value) => {
-  const normalized = String(value || '').replace(/,/g, '').trim();
+  const normalized = String(value || '').replace(/[\s,]/g, '').trim();
   const match = normalized.match(/\d+(?:\.\d{1,2})?/);
   if (!match) return null;
   const amount = Number(match[0]);
@@ -65,7 +65,7 @@ const extractAmountDetails = (text) => {
   }
 
   // Maya labels an outgoing payment as "Sent money to" and displays the debit with a minus sign.
-  const labeled = source.match(/(?:amount(?:\s+(?:sent|paid|received))?|total(?:\s+amount)?|sent(?:\s+money\s+to)?|paid|received)\s*[:=\-]?\s*(?:[\u2212-]\s*)?(PHP|\u20b1|\$|\u20ac|\u00a3|\u00a5)?\s*([\d,]+(?:\.\d{1,2})?)/iu);
+  const labeled = source.match(/(?:amount(?:\s+(?:sent|paid|received))?|total(?:\s+amount)?|sent(?:\s+money\s+to)?|paid|received)\s*[:=\-]?\s*(?:[\u2212\u2013\u2014-]\s*)?(PHP|\u20b1|\$|\u20ac|\u00a3|\u00a5)?\s*([\d][\d,\s]*(?:\.\s*\d{1,2})?)/iu);
   if (labeled) {
     const marker = labeled[1];
     const normalizedMarker = String(marker || '').normalize('NFKC').trim().toUpperCase();
@@ -80,6 +80,22 @@ const extractAmountDetails = (text) => {
       phpEquivalent: currency === 'PHP' ? amount : phpEquivalent,
     };
   }
+
+  // Maya OCR can split its heading and debit across text blocks or insert spaces around separators.
+  const mayaSentAmount = source.match(/\bsent\s+money\s+to\b[\s\S]{0,120}?[\u2212\u2013\u2014-]?\s*((?:\d{1,3}(?:[\s,]\s*\d{3})+|\d+)\s*\.\s*\d{1,2})/iu);
+  if (mayaSentAmount) {
+    const amount = parseAmount(mayaSentAmount[1]);
+    if (amount !== null) return { amount, currency: 'PHP', phpEquivalent: amount };
+  }
+
+  if (/\b(?:maya|paymaya)\b/i.test(source)) {
+    const standaloneMoney = source.match(/(?:^|\n)\s*[\u2212\u2013\u2014-]?\s*((?:\d{1,3}(?:[\s,]\s*\d{3})+|\d+)\s*\.\s*\d{1,2})\s*(?=\r?\n|$)/iu);
+    if (standaloneMoney) {
+      const amount = parseAmount(standaloneMoney[1]);
+      if (amount !== null) return { amount, currency: 'PHP', phpEquivalent: amount };
+    }
+  }
+
 
   const currencyPrefix = source.match(/(\$|€|£|¥)\s*([\d,]+(?:\.\d{1,2})?)/u);
   if (currencyPrefix) {
