@@ -425,7 +425,8 @@ async function acceptBooking(req,res){
    const [rows]=await connection.query("SELECT *,DATE_FORMAT(booking_date,'%Y-%m-%d') AS booking_date_key FROM bookings WHERE id=? FOR UPDATE",[bookingId]);
    const booking=rows[0];
    if(!booking)throw httpError('Reservation not found.',404);
-   if(booking.status!=='pending')throw httpError('Only pending bookings can be accepted.',409);
+   const outdatedReceipt=booking.payment_proof_review==='auto_declined'&&/^Receipt is outdated\./i.test(String(booking.rejection_reason||''));
+   if(booking.status!=='pending'&&!(outdatedReceipt&&booking.status==='rejected'))throw httpError('Only pending bookings or bookings declined solely because of an outdated receipt can be accepted.',409);
    const [packageRows]=await connection.query('SELECT name,price,day_tour_price,night_tour_price,twenty_two_hour_price,max_guests FROM packages WHERE id=? LIMIT 1 FOR UPDATE',[booking.package_id]);
    if(!packageRows[0])throw httpError('The package price could not be verified. Do not accept this payment until the booking is reviewed.',422);
    const currentQuote=quoteBooking({packageRecord:{...packageRows[0],max_guests:booking.included_guest_count||1},tourType:booking.tour_type,guestCount:booking.guest_count,paymentType:booking.payment_type||'downpayment'});
@@ -437,8 +438,19 @@ async function acceptBooking(req,res){
    if(!bookingEndTime||bookingEndTime<=new Date())throw httpError('This booking can no longer be accepted because its checkout time has passed.',409);
    const receiptImage=await getUploadedReceiptBuffer(booking.receipt_url,connection);
    if(!receiptImage)throw httpError('A valid payment receipt is required before accepting this booking.',422);
-   if(booking.payment_status!=='pending_verification')throw httpError('Only bookings with a submitted payment proof can be accepted.',422);
-   if(booking.payment_proof_review==='auto_declined')throw httpError('This payment proof was automatically declined. Upload a new, current, original receipt before requesting approval.',422);
+   if(booking.payment_status!=='pending_verification'&&!(outdatedReceipt&&booking.payment_status==='declined'))throw httpError('Only bookings with a submitted payment proof can be accepted.',422);
+   if(booking.payment_proof_review==='auto_declined'&&!outdatedReceipt)throw httpError('This payment proof was automatically declined and cannot be accepted.',422);
+   if(outdatedReceipt&&booking.payment_proof_fingerprint){
+    const [duplicateImages]=await connection.query('SELECT id FROM bookings WHERE payment_proof_fingerprint=? AND id<>? LIMIT 1',[booking.payment_proof_fingerprint,booking.id]);
+    if(duplicateImages.length)throw httpError('This receipt image was already submitted for another booking and cannot be accepted.',409);
+   }
+   if(outdatedReceipt){
+    const receiptReference=String(booking.payment_proof_ocr_reference||booking.payment_reference_number||'').trim();
+    if(receiptReference){
+     const [duplicateReferences]=await connection.query('SELECT id FROM bookings WHERE id<>? AND (LOWER(payment_reference_number)=LOWER(?) OR LOWER(payment_proof_ocr_reference)=LOWER(?)) LIMIT 1',[booking.id,receiptReference,receiptReference]);
+     if(duplicateReferences.length)throw httpError('This transaction reference was already used for another booking and cannot be accepted.',409);
+    }
+   }
    if(!String(booking.payment_mode||booking.payment_qr_code_label||'').trim())throw httpError('The booking payment method is missing.',422);
    const [qrRows]=await connection.query('SELECT id,label,is_active FROM payment_qr_codes WHERE id=? LIMIT 1 FOR UPDATE',[booking.payment_qr_code_id]);
    if(!qrRows[0]||!qrRows[0].is_active)throw httpError('The selected payment method is no longer active. Do not accept this receipt.',422);
@@ -451,14 +463,14 @@ async function acceptBooking(req,res){
    const receiptDate=booking.payment_proof_ocr_date instanceof Date
     ?booking.payment_proof_ocr_date.toISOString().slice(0,10)
     :String(booking.payment_proof_ocr_date||'').slice(0,10);
-   if(!receiptDate)throw httpError('The receipt date could not be verified. Upload a receipt showing today’s date.',422);
-   if(receiptDate!==getTodayManilaDate())throw httpError('Receipt is outdated. Only receipts dated today are accepted.',422);
+   if(!/^\d{4}-\d{2}-\d{2}$/.test(receiptDate))throw httpError('The receipt date could not be verified. Review the original receipt date before accepting.',422);
+   if(receiptDate>getTodayManilaDate())throw httpError('The receipt date is in the future. Verify the original receipt before accepting.',422);
    const receiptAmount=Number(booking.payment_proof_ocr_amount);
    if(!Number.isFinite(receiptAmount)||receiptAmount<=0)throw httpError('The receipt amount could not be verified. Upload a receipt showing the current booking fee.',422);
    if(Math.round(receiptAmount*100)!==Math.round(currentQuote.payment_amount_due*100)){
     throw httpError('Payment amount does not match the booking fee. An updated receipt is required.',422);
    }
-  await connection.query("UPDATE bookings SET status='confirmed',approved_by=?,approved_at=NOW(),payment_status='paid',payment_proof_review='verified',rejection_reason=NULL,updated_date=NOW() WHERE id=? AND status='pending'",[String(req.user.id||'').slice(0,64),booking.id]);
+  await connection.query("UPDATE bookings SET status='confirmed',approved_by=?,approved_at=NOW(),rejected_by=NULL,rejected_at=NULL,payment_status='paid',payment_proof_review='verified',rejection_reason=NULL,updated_date=NOW() WHERE id=? AND status=?",[String(req.user.id||'').slice(0,64),booking.id,booking.status]);
   await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Administrator','Booking accepted and payment manually verified','Booking',booking.id,`Accepted ${booking.booking_reference} and manually verified the submitted ${booking.payment_mode||booking.payment_qr_code_label} proof for ${Number(booking.payment_amount_due).toFixed(2)}.`]);
   const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);
   await connection.commit();
