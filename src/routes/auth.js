@@ -97,6 +97,9 @@ const pendingGoogleCookieOptions = () => ({
   path: '/api',
   maxAge: 10 * 60 * 1000
 });
+const escapeAuthHtml = (value) => String(value || '').replace(/[&<>"']/g, (character) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+})[character]);
 
 const registrationOtp = () =>
   config.sampleRegistrationOtp || randomOtp();
@@ -427,15 +430,16 @@ router.get('/', async (req, res, next) => {
       }
 
       const [rows] = await pool.query(
-        `SELECT u.email
+        `SELECT u.email,t.purpose,r.requested_email
          FROM password_reset_tokens t
          INNER JOIN users u ON u.id=t.user_id
+         LEFT JOIN account_recovery_requests r ON r.id=t.recovery_request_id
          WHERE t.token_hash=?
-           AND t.purpose='reset_authorization'
+           AND (t.purpose='reset_authorization' OR (t.purpose='account_recovery' AND r.status='approved'))
            AND t.used_at IS NULL
            AND t.expires_at>NOW()
            AND u.disabled=0
-           AND NULLIF(TRIM(u.password_hash), '') IS NOT NULL
+           AND (t.purpose='account_recovery' OR NULLIF(TRIM(u.password_hash), '') IS NOT NULL)
          LIMIT 1`,
         [sha256(token)]
       );
@@ -444,7 +448,23 @@ router.get('/', async (req, res, next) => {
         return res.status(404).json({ error: 'This reset authorization is invalid or expired.' });
       }
 
-      return res.json({ valid: true, email: rows[0].email });
+      return res.json({ valid: true, email: rows[0].requested_email || rows[0].email, recovery: rows[0].purpose === 'account_recovery' });
+    }
+
+    if (action === 'admin-account-recovery-list') {
+      if (!req.user) return res.status(401).json({ error: 'Not authenticated.' });
+      if ((req.user.role || req.user.app_role) !== 'super_admin') {
+        return res.status(403).json({ error: 'Only a super admin can review account recovery requests.' });
+      }
+      const [rows] = await pool.query(
+        `SELECT r.id,r.old_email,r.requested_email,r.full_name,r.phone,r.booking_reference,r.reason,r.created_date,
+                u.email AS account_email,u.full_name AS account_full_name,u.phone AS account_phone
+         FROM account_recovery_requests r
+         LEFT JOIN users u ON u.id=r.user_id
+         WHERE r.status='pending'
+         ORDER BY r.created_date ASC LIMIT 100`
+      );
+      return res.json(rows);
     }
 
     return res.status(405).json({
@@ -465,6 +485,210 @@ router.post('/', async (req, res, next) => {
     const p = req.body || {};
     const isGoogleRedirectPayload = Boolean(p.credential && p.g_csrf_token);
     const action = req.query.action || (isGoogleRedirectPayload ? 'google-login' : '');
+
+    if (action === 'request-account-recovery') {
+      const oldEmail = String(p.old_email || '').trim().toLowerCase();
+      const requestedEmail = String(p.requested_email || '').trim().toLowerCase();
+      const fullName = String(p.full_name || '').trim().slice(0, 191);
+      const phone = String(p.phone || '').trim().slice(0, 32);
+      const bookingReference = String(p.booking_reference || '').trim().slice(0, 64);
+      const reason = String(p.reason || '').trim().slice(0, 1000);
+      if (oldEmail.length > 191 || requestedEmail.length > 191
+        || !emailOk(oldEmail) || !emailOk(requestedEmail) || oldEmail === requestedEmail
+        || !fullName || !phone || !phoneOk(phone)) {
+        return res.status(422).json({ error: 'Enter the old and new email addresses, your full name, and a valid phone number. The new email must be different.' });
+      }
+
+      const genericResponse = {
+        success: true,
+        message: 'If an eligible account was found, the recovery request has been sent for admin review. Contact the resort through its official channels if you need help.',
+      };
+      if (!consumeOtpIpRequest(req, 'account-recovery')) return res.json(genericResponse);
+
+      const connection = await pool.getConnection();
+      let createdRequest = null;
+      try {
+        await connection.beginTransaction();
+        const [users] = await connection.query(
+          'SELECT id,email,disabled FROM users WHERE LOWER(email)=LOWER(?) LIMIT 1 FOR UPDATE',
+          [oldEmail]
+        );
+        const user = users[0];
+        if (user && !user.disabled) {
+          const [emailOwners] = await connection.query(
+            'SELECT id FROM users WHERE LOWER(email)=LOWER(?) AND id<>? LIMIT 1',
+            [requestedEmail, user.id]
+          );
+          const [recentRequests] = await connection.query(
+            `SELECT COUNT(*) AS request_count FROM account_recovery_requests
+             WHERE user_id=? AND created_date>=DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)`,
+            [user.id]
+          );
+          const [pendingRequests] = await connection.query(
+            "SELECT id FROM account_recovery_requests WHERE user_id=? AND status='pending' LIMIT 1",
+            [user.id]
+          );
+          if (!emailOwners.length && Number(recentRequests[0]?.request_count || 0) < 3 && !pendingRequests.length) {
+            const createdAt = now();
+            createdRequest = id('recovery');
+            await connection.query(
+              `INSERT INTO account_recovery_requests
+               (id,user_id,old_email,requested_email,full_name,phone,booking_reference,reason,status,created_date,updated_date)
+               VALUES (?,?,?,?,?,?,?,?, 'pending',?,?)`,
+              [createdRequest, user.id, oldEmail, requestedEmail, fullName, phone, bookingReference || null, reason || null, createdAt, createdAt]
+            );
+          }
+        }
+        await connection.commit();
+      } catch (error) {
+        try { await connection.rollback(); } catch {}
+        throw error;
+      } finally {
+        connection.release();
+      }
+      if (createdRequest) {
+        void (async () => {
+          const [admins] = await pool.query(
+            "SELECT email FROM users WHERE disabled=0 AND role='super_admin' AND email IS NOT NULL"
+          );
+          const recipients = [...new Set([config.mail.admin, ...admins.map((admin) => admin.email)]
+            .map((value) => String(value || '').trim().toLowerCase())
+            .filter(Boolean))];
+          await Promise.all(recipients.map((recipient) => sendMail(
+            recipient,
+            'Account recovery request needs review | Kasa Ilaya Resort',
+            `<p>A user submitted an account recovery request that needs manual identity verification.</p>
+             <p><strong>Account email:</strong> ${escapeAuthHtml(oldEmail)}<br>
+             <strong>Requested email:</strong> ${escapeAuthHtml(requestedEmail)}<br>
+             <strong>Name submitted:</strong> ${escapeAuthHtml(fullName)}<br>
+             <strong>Phone submitted:</strong> ${escapeAuthHtml(phone)}<br>
+             <strong>Booking reference:</strong> ${escapeAuthHtml(bookingReference || 'Not provided')}</p>
+             <p>Review the request in User Permissions. Contact the user using the phone number already on the account before approving.</p>`,
+            'account_recovery_admin'
+          )));
+        })().catch((error) => console.error('Account recovery admin notification failed', { code: error.code, requestId: createdRequest }));
+      }
+      return res.json(genericResponse);
+    }
+
+    if (action === 'admin-review-account-recovery') {
+      if (!req.user) return res.status(401).json({ error: 'Not authenticated.' });
+      if ((req.user.role || req.user.app_role) !== 'super_admin') {
+        return res.status(403).json({ error: 'Only a super admin can review account recovery requests.' });
+      }
+      const requestId = String(p.request_id || '').trim();
+      const decision = String(p.decision || '').trim().toLowerCase();
+      const reviewNote = String(p.review_note || '').trim().slice(0, 1000);
+      if (!requestId || !['approve', 'decline'].includes(decision)) {
+        return res.status(422).json({ error: 'Choose a valid account recovery request and decision.' });
+      }
+      if (decision === 'approve' && p.identity_verified !== true) {
+        return res.status(422).json({ error: 'Confirm that the person was verified using contact information already on file before approving recovery.' });
+      }
+      if (decision === 'decline' && reviewNote.length < 5) {
+        return res.status(422).json({ error: 'Add a brief reason before declining this recovery request.' });
+      }
+      const recoveryOrigin = decision === 'approve' ? getTrustedFrontendOrigin(req) : '';
+      if (decision === 'approve' && !recoveryOrigin) {
+        return res.status(503).json({ error: 'The recovery link cannot be created because the frontend URL is not configured.' });
+      }
+
+      const connection = await pool.getConnection();
+      let recoveryEmail = '';
+      let recoveryFullName = '';
+      let recoveryToken = '';
+      try {
+        await connection.beginTransaction();
+        const [requests] = await connection.query(
+          `SELECT r.*,u.email AS account_email,u.disabled
+           FROM account_recovery_requests r
+           LEFT JOIN users u ON u.id=r.user_id
+           WHERE r.id=? FOR UPDATE`,
+          [requestId]
+        );
+        const recovery = requests[0];
+        if (!recovery || recovery.status !== 'pending') {
+          await connection.rollback();
+          return res.status(404).json({ error: 'That account recovery request is no longer pending.' });
+        }
+        if (!recovery.account_email || recovery.disabled) {
+          await connection.rollback();
+          return res.status(409).json({ error: 'The account is no longer eligible for recovery.' });
+        }
+
+        if (decision === 'decline') {
+          const reviewedAt = now();
+          await connection.query(
+            `UPDATE account_recovery_requests SET status='declined',reviewed_by=?,reviewed_at=?,review_note=?,updated_date=? WHERE id=? AND status='pending'`,
+            [req.user.id, reviewedAt, reviewNote, reviewedAt, requestId]
+          );
+          await connection.query(
+            `INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,actor_role,action,entity_type,entity_id,details)
+             VALUES (?,?,?,?,?,?,?,?,?,?)`,
+            [id('activitylog'), reviewedAt, reviewedAt, req.user.email || null, req.user.full_name || req.user.name || 'Super admin', 'super_admin', 'Declined account recovery request', 'User', recovery.user_id, `Declined recovery request ${requestId}. ${reviewNote}`]
+          );
+          await connection.commit();
+          return res.json({ success: true, decision: 'declined' });
+        }
+
+        const [emailOwners] = await connection.query(
+          'SELECT id FROM users WHERE LOWER(email)=LOWER(?) AND id<>? LIMIT 1 FOR UPDATE',
+          [recovery.requested_email, recovery.user_id]
+        );
+        if (emailOwners.length) {
+          await connection.rollback();
+          return res.status(409).json({ error: 'The requested email is already connected to another account. Ask the user to submit a different email.' });
+        }
+
+        recoveryToken = crypto.randomBytes(32).toString('hex');
+        const tokenHash = sha256(recoveryToken);
+        const reviewedAt = now();
+        await connection.query(
+          `UPDATE password_reset_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL`,
+          [reviewedAt, recovery.user_id]
+        );
+        await connection.query(
+          `INSERT INTO password_reset_tokens (id,user_id,token_hash,purpose,attempts,recovery_request_id,created_date,expires_at)
+           VALUES (?,?,?,'account_recovery',0,?,?,?)`,
+          [id('resettoken'), recovery.user_id, tokenHash, requestId, reviewedAt, new Date(Date.now() + 900000).toISOString().slice(0, 19).replace('T', ' ')]
+        );
+        await connection.query(
+          `UPDATE account_recovery_requests SET status='approved',reviewed_by=?,reviewed_at=?,review_note=?,updated_date=? WHERE id=? AND status='pending'`,
+          [req.user.id, reviewedAt, reviewNote || null, reviewedAt, requestId]
+        );
+        await connection.query(
+          `INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,actor_role,action,entity_type,entity_id,details)
+           VALUES (?,?,?,?,?,?,?,?,?,?)`,
+          [id('activitylog'), reviewedAt, reviewedAt, req.user.email || null, req.user.full_name || req.user.name || 'Super admin', 'super_admin', 'Approved account recovery request', 'User', recovery.user_id, `Approved recovery request ${requestId}; a one-time link was issued to ${recovery.requested_email}.`]
+        );
+        await connection.commit();
+        recoveryEmail = recovery.requested_email;
+        recoveryFullName = recovery.full_name;
+      } catch (error) {
+        try { await connection.rollback(); } catch {}
+        throw error;
+      } finally {
+        connection.release();
+      }
+
+      const resetUrl = new URL('/ResetPassword', recoveryOrigin);
+      resetUrl.searchParams.set('token', recoveryToken);
+      const mail = await sendMail(
+        recoveryEmail,
+        'Complete your Kasa Ilaya Resort account recovery',
+        `<p>Hello ${escapeAuthHtml(recoveryFullName || 'there')},</p>
+         <p>Your account recovery request was reviewed by a resort super admin. Use this one-time link to verify your new email address and set a new password.</p>
+         <p><a href="${escapeAuthHtml(resetUrl.toString())}" style="display:inline-block;background:#0d5558;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:7px;font-weight:bold;">Verify email and reset password</a></p>
+         <p>This link expires in 15 minutes and works once. If you did not request this, contact Kasa Ilaya Resort using its official contact details.</p>`,
+        'account_recovery'
+      );
+      if (!mail.sent) {
+        await pool.query('UPDATE password_reset_tokens SET used_at=? WHERE token_hash=? AND used_at IS NULL', [now(), sha256(recoveryToken)]);
+        await pool.query("UPDATE account_recovery_requests SET status='pending',reviewed_by=NULL,reviewed_at=NULL,review_note=NULL,updated_date=? WHERE id=? AND status='approved'", [now(), requestId]);
+        return res.status(502).json({ error: mail.error || 'Unable to send the recovery link. The request remains pending.' });
+      }
+      return res.json({ success: true, decision: 'approved', email_sent: true });
+    }
 
     if (action === 'admin-create-account') {
       if (!req.user) return res.status(401).json({ error: 'Not authenticated.' });
@@ -2067,14 +2291,18 @@ router.post('/', async (req, res, next) => {
 
       const [r] =
         await pool.query(
-          `SELECT t.*
+          `SELECT t.*,u.email AS account_email
            FROM password_reset_tokens t
            INNER JOIN users u ON u.id=t.user_id
            WHERE t.token_hash=?
-             AND t.purpose='reset_authorization'
+             AND t.purpose IN ('reset_authorization','account_recovery')
              AND t.used_at IS NULL
              AND u.disabled=0
-             AND NULLIF(TRIM(u.password_hash), '') IS NOT NULL
+             AND (t.purpose='account_recovery' OR NULLIF(TRIM(u.password_hash), '') IS NOT NULL)
+             AND (t.purpose<>'account_recovery' OR EXISTS (
+               SELECT 1 FROM account_recovery_requests ar
+               WHERE ar.id=t.recovery_request_id AND ar.user_id=t.user_id AND ar.status='approved'
+             ))
            LIMIT 1`,
           [sha256(token)]
         );
@@ -2090,6 +2318,90 @@ router.post('/', async (req, res, next) => {
           error:
             'This reset authorization is invalid or expired.'
         });
+      }
+
+      if (rec.purpose === 'account_recovery') {
+        const connection = await pool.getConnection();
+        let recoveredEmail = '';
+        let originalEmail = '';
+        try {
+          await connection.beginTransaction();
+          const [tokens] = await connection.query(
+            `SELECT t.*,u.email AS account_email,u.disabled
+             FROM password_reset_tokens t INNER JOIN users u ON u.id=t.user_id
+             WHERE t.id=? AND t.token_hash=? AND t.purpose='account_recovery'
+               AND t.used_at IS NULL AND t.expires_at>NOW() FOR UPDATE`,
+            [rec.id, sha256(token)]
+          );
+          const recoveryToken = tokens[0];
+          if (!recoveryToken || recoveryToken.disabled) {
+            await connection.rollback();
+            return res.status(404).json({ error: 'This reset authorization is invalid or expired.' });
+          }
+          const [requests] = await connection.query(
+            `SELECT * FROM account_recovery_requests
+             WHERE id=? AND user_id=? AND status='approved' LIMIT 1 FOR UPDATE`,
+            [recoveryToken.recovery_request_id, recoveryToken.user_id]
+          );
+          const recovery = requests[0];
+          if (!recovery || !emailOk(recovery.requested_email)) {
+            await connection.rollback();
+            return res.status(404).json({ error: 'This reset authorization is invalid or expired.' });
+          }
+          const [emailOwners] = await connection.query(
+            'SELECT id FROM users WHERE LOWER(email)=LOWER(?) AND id<>? LIMIT 1 FOR UPDATE',
+            [recovery.requested_email, recoveryToken.user_id]
+          );
+          if (emailOwners.length) {
+            await connection.rollback();
+            return res.status(409).json({ error: 'This email is now connected to another account. Contact the resort for help.' });
+          }
+          const recoveredAt = now();
+          const passwordHash = await bcrypt.hash(next, 12);
+          await connection.query(
+            'UPDATE users SET email=?,password_hash=?,updated_date=? WHERE id=?',
+            [recovery.requested_email, passwordHash, recoveredAt, recoveryToken.user_id]
+          );
+          await connection.query(
+            'UPDATE password_reset_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL',
+            [recoveredAt, recoveryToken.user_id]
+          );
+          await connection.query(
+            `UPDATE account_recovery_requests SET status='completed',updated_date=? WHERE id=? AND status='approved'`,
+            [recoveredAt, recovery.id]
+          );
+          await connection.query(
+            'UPDATE auth_sessions SET revoked_at=NOW() WHERE user_id=? AND revoked_at IS NULL',
+            [recoveryToken.user_id]
+          );
+          await connection.query(
+            `INSERT INTO account_activity (id,user_id,event_type,description,created_at)
+             VALUES (?,?,?,?,?)`,
+            [id('account-activity'), recoveryToken.user_id, 'account_recovered', 'Updated the account email and password using an approved recovery request. All active devices were signed out.', recoveredAt]
+          );
+          await connection.query(
+            `INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,actor_role,action,entity_type,entity_id,details)
+             VALUES (?,?,?,?,?,?,?,?,?,?)`,
+            [id('activitylog'), recoveredAt, recoveredAt, recovery.old_email, recovery.full_name, 'system', 'Completed account recovery', 'User', recoveryToken.user_id, `Account email changed to ${recovery.requested_email} after approved recovery request ${recovery.id}; password reset and active sessions revoked.`]
+          );
+          await connection.commit();
+          recoveredEmail = recovery.requested_email;
+          originalEmail = recovery.old_email;
+        } catch (error) {
+          try { await connection.rollback(); } catch {}
+          throw error;
+        } finally {
+          connection.release();
+        }
+
+        void sendMail(
+          originalEmail,
+          'Your Kasa Ilaya Resort account recovery was completed',
+          `<p>The email address for your Kasa Ilaya Resort account was changed to <strong>${escapeAuthHtml(recoveredEmail)}</strong> after an approved recovery request.</p>
+           <p>If you did not request this change, contact the resort through its official channels immediately.</p>`,
+          'account_recovery_notice'
+        ).catch((error) => console.error('Account recovery notice could not be sent', { code: error.code }));
+        return res.json({ success: true, email_changed: true });
       }
 
       await pool.query(

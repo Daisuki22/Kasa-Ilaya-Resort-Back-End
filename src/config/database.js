@@ -71,6 +71,30 @@ async function ensureRuntimeSchema(){
   if(await tableExists('password_reset_tokens')){
     await addColumnIfMissing('password_reset_tokens','purpose',"purpose VARCHAR(32) NOT NULL DEFAULT 'reset_authorization' AFTER token_hash");
     await addColumnIfMissing('password_reset_tokens','attempts','attempts INT NOT NULL DEFAULT 0 AFTER purpose');
+    await addColumnIfMissing('password_reset_tokens','recovery_request_id','recovery_request_id VARCHAR(64) NULL AFTER attempts');
+    if(!await indexExists('password_reset_tokens','idx_password_reset_tokens_recovery_request')){
+      await pool.query('ALTER TABLE password_reset_tokens ADD KEY idx_password_reset_tokens_recovery_request (recovery_request_id)');
+    }
+  }
+  if(!await tableExists('account_recovery_requests')){
+    await pool.query(`CREATE TABLE account_recovery_requests (
+      id VARCHAR(64) NOT NULL PRIMARY KEY,
+      user_id VARCHAR(64) NOT NULL,
+      old_email VARCHAR(191) NOT NULL,
+      requested_email VARCHAR(191) NOT NULL,
+      full_name VARCHAR(191) NOT NULL,
+      phone VARCHAR(32) NOT NULL,
+      booking_reference VARCHAR(64) NULL,
+      reason VARCHAR(1000) NULL,
+      status VARCHAR(16) NOT NULL DEFAULT 'pending',
+      reviewed_by VARCHAR(64) NULL,
+      reviewed_at DATETIME NULL,
+      review_note VARCHAR(1000) NULL,
+      created_date DATETIME NOT NULL,
+      updated_date DATETIME NOT NULL,
+      KEY idx_account_recovery_status_created (status, created_date),
+      KEY idx_account_recovery_user_created (user_id, created_date)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`);
   }
   if(!await tableExists('password_reset_otps')){
     await pool.query(`CREATE TABLE password_reset_otps (

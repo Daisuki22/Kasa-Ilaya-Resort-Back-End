@@ -862,14 +862,35 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
   token_hash VARCHAR(64) NOT NULL,
   purpose VARCHAR(32) NOT NULL DEFAULT 'reset_authorization',
   attempts INT NOT NULL DEFAULT 0,
+  recovery_request_id VARCHAR(64) NULL,
   created_date DATETIME NOT NULL,
   expires_at DATETIME NOT NULL,
   used_at DATETIME NULL,
   KEY idx_password_reset_tokens_user (user_id),
   KEY idx_password_reset_tokens_hash (token_hash),
+  KEY idx_password_reset_tokens_recovery_request (recovery_request_id),
   CONSTRAINT fk_password_reset_user
     FOREIGN KEY (user_id) REFERENCES users(id)
     ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS account_recovery_requests (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  user_id VARCHAR(64) NOT NULL,
+  old_email VARCHAR(191) NOT NULL,
+  requested_email VARCHAR(191) NOT NULL,
+  full_name VARCHAR(191) NOT NULL,
+  phone VARCHAR(32) NOT NULL,
+  booking_reference VARCHAR(64) NULL,
+  reason VARCHAR(1000) NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'pending',
+  reviewed_by VARCHAR(64) NULL,
+  reviewed_at DATETIME NULL,
+  review_note VARCHAR(1000) NULL,
+  created_date DATETIME NOT NULL,
+  updated_date DATETIME NOT NULL,
+  KEY idx_account_recovery_status_created (status, created_date),
+  KEY idx_account_recovery_user_created (user_id, created_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 ALTER TABLE registration_otps
@@ -880,6 +901,9 @@ ALTER TABLE registration_otps
 ALTER TABLE password_reset_tokens
   ADD COLUMN IF NOT EXISTS purpose VARCHAR(32) NOT NULL DEFAULT 'reset_authorization' AFTER token_hash,
   ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0 AFTER purpose;
+
+ALTER TABLE password_reset_tokens
+  ADD COLUMN IF NOT EXISTS recovery_request_id VARCHAR(64) NULL AFTER attempts;
 
 
 --
