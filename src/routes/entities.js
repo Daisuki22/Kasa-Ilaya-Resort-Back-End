@@ -482,6 +482,8 @@ async function acceptBooking(req,res){
   const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);
   await connection.commit();
   transactionStarted=false;
+  void sendBookingStatusEmail(deserialize(MAP.Booking,updatedRows[0]),'confirmed')
+   .catch(error=>console.error('Booking confirmation email failed',{bookingId:booking.id,code:error.code}));
   return res.json({success:true,data:deserialize(MAP.Booking,updatedRows[0])});
  }catch(error){
   if(transactionStarted)try{await connection.rollback();}catch{}

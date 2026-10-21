@@ -206,10 +206,11 @@ async function sendBookingSubmissionEmails(booking) {
 
 async function sendBookingStatusEmail(booking, status, reason = '') {
   const normalizedStatus = String(status || '').toLowerCase();
-  if (!booking?.customer_email || !['cancelled', 'rejected'].includes(normalizedStatus)) {
-    return { sent: false, error: 'A guest email and a cancelled or rejected booking status are required.' };
+  if (!booking?.customer_email || !['confirmed', 'cancelled', 'rejected'].includes(normalizedStatus)) {
+    return { sent: false, error: 'A guest email and a confirmed, cancelled, or rejected booking status are required.' };
   }
 
+  const confirmed = normalizedStatus === 'confirmed';
   const rejected = normalizedStatus === 'rejected';
   const reference = booking.booking_reference || booking.id || 'your reservation';
   const bookingDate = booking.booking_date instanceof Date
@@ -224,8 +225,10 @@ async function sendBookingStatusEmail(booking, status, reason = '') {
   const origin = String(config.frontendUrl || '').split(',')[0].trim().replace(/\/$/, '');
   const bookingsUrl = origin ? `${origin}/MyBookings` : '/MyBookings';
   const detail = String(reason || booking.rejection_reason || '').trim();
-  const statusText = rejected ? 'was not accepted by the resort' : 'has been cancelled';
-  const detailHtml = rejected
+  const statusText = confirmed ? 'has been confirmed by the resort' : rejected ? 'was declined by the resort' : 'has been cancelled';
+  const detailHtml = confirmed
+    ? '<p>We look forward to welcoming you. Please review your reservation details and contact us if anything needs to be updated.</p>'
+    : rejected
     ? `<p><strong>Reason:</strong> ${escapeHtml(detail || 'Please contact the resort for more information.')}</p>`
     : detail
       ? `<p>${escapeHtml(detail)}</p>`
@@ -233,7 +236,7 @@ async function sendBookingStatusEmail(booking, status, reason = '') {
 
   const result = await sendMail(
     booking.customer_email,
-    `${rejected ? 'Reservation update' : 'Reservation cancelled'} - ${reference} | Kasa Ilaya Resort`,
+    `${confirmed ? 'Reservation confirmed' : rejected ? 'Reservation declined' : 'Reservation cancelled'} - ${reference} | Kasa Ilaya Resort`,
     `<p>Hello ${escapeHtml(booking.customer_name || 'Guest')},</p>
      <p>Your reservation <strong>${escapeHtml(reference)}</strong> ${statusText}.</p>
      <p><strong>Package:</strong> ${escapeHtml(booking.package_name || 'Resort booking')}<br>
@@ -241,7 +244,7 @@ async function sendBookingStatusEmail(booking, status, reason = '') {
      ${detailHtml}
      <p><a href="${escapeHtml(bookingsUrl)}" style="display:inline-block;background:#0d5558;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:7px;font-weight:bold;">View my bookings</a></p>
      <p>If you have questions, please contact Kasa Ilaya Resort.</p>`,
-    rejected ? 'booking_rejected' : 'booking_cancelled'
+    confirmed ? 'booking_confirmed' : rejected ? 'booking_rejected' : 'booking_cancelled'
   );
 
   if (!result.sent) {
