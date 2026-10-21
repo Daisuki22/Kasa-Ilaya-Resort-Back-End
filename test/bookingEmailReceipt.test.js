@@ -11,7 +11,16 @@ Object.assign(process.env, {
   FRONTEND_URL: 'https://kasailaya.example',
 });
 
-const { bookingEmailHtml } = require('../src/services/notifications');
+const { bookingEmailHtml, loadBookingEmailLogoAttachment } = require('../src/services/notifications');
+
+test('booking email embeds an opaque PNG logo for email clients', () => {
+  const logo = loadBookingEmailLogoAttachment();
+  assert.ok(Buffer.isBuffer(logo.content));
+  assert.equal(logo.contentType, 'image/png');
+  assert.equal(logo.contentDisposition, 'inline');
+  assert.equal(logo.cid, 'kasa-ilaya-receipt-logo');
+  assert.equal(logo.content.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+});
 
 test('booking notification email renders a printable-style resort payment receipt', () => {
   const html = bookingEmailHtml({
@@ -32,7 +41,7 @@ test('booking notification email renders a printable-style resort payment receip
     payment_reference_number: '235456522642',
   });
 
-  assert.match(html, /kasa-ilaya-main-logo\.webp/);
+  assert.match(html, /src="cid:kasa-ilaya-receipt-logo"/);
   assert.match(html, /Kasa Ilaya Resort &amp; Event Place/);
   assert.match(html, /Sitio Pook na Munti/);
   assert.match(html, /KI-MVHT3JMB/);

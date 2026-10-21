@@ -3,6 +3,7 @@ const config = require('../config/env');
 const { id, now } = require('../utils');
 const { getBookingStartDateTime, dateKeyFromDate, addDateKeyDays, calendarDaysUntil } = require('./bookingSchedule');
 const { sendMail } = require('./mail');
+const fs = require('node:fs');
 const path = require('node:path');
 
 async function createNotification({ email, eventKey, title, description, link, entityId, actorName, actorProfileImageUrl }) {
@@ -85,6 +86,21 @@ async function loadBookingReceiptAttachment(booking) {
   }
 }
 
+function loadBookingEmailLogoAttachment() {
+  try {
+    return {
+      filename: 'kasa-ilaya-resort-logo.png',
+      content: fs.readFileSync(path.join(__dirname, '../assets/email-receipt-logo.png')),
+      contentType: 'image/png',
+      contentDisposition: 'inline',
+      cid: 'kasa-ilaya-receipt-logo',
+    };
+  } catch (error) {
+    console.error('Booking email logo could not be loaded', { code: error.code });
+    return null;
+  }
+}
+
 function bookingEmailHtml(booking, { admin = false, receiptAttached = false } = {}) {
   const additionalGuestRate = 150;
   const dateValue = booking.booking_date instanceof Date
@@ -97,7 +113,6 @@ function bookingEmailHtml(booking, { admin = false, receiptAttached = false } = 
   const currency = (value) => `₱${Number(value || 0).toLocaleString('en-PH', { maximumFractionDigits: 2 })}`;
   const origin = String(config.frontendUrl || '').split(',')[0].trim().replace(/\/$/, '');
   const bookingsUrl = origin ? `${origin}/MyBookings` : '/MyBookings';
-  const logoUrl = origin ? `${origin}/img/kasa-ilaya-main-logo.webp` : '';
   const guestCount = Number(booking.guest_count || 0);
   const includedGuestCount = Number(booking.included_guest_count || 0);
   const additionalGuestFee = Math.max(guestCount - includedGuestCount, 0) * additionalGuestRate;
@@ -134,7 +149,7 @@ function bookingEmailHtml(booking, { admin = false, receiptAttached = false } = 
   return `<p style="margin:0 0 16px">Hello ${escapeHtml(booking.customer_name || 'Guest')}, ${admin ? 'a new reservation was submitted and is awaiting resort review.' : 'we received your reservation request. It is pending resort confirmation; your booking is not confirmed yet.'}</p>
     <table role="presentation" align="center" width="100%" cellpadding="0" cellspacing="0" style="max-width:430px;border:1px solid #ddd6ca;border-radius:12px;border-collapse:separate;border-spacing:0;background:#fff">
       <tr><td style="padding:18px 20px 14px;text-align:center">
-        ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" alt="Kasa Ilaya Resort logo" width="120" style="display:block;width:120px;max-width:100%;height:auto;margin:0 auto 8px">` : ''}
+        <img src="cid:kasa-ilaya-receipt-logo" alt="Kasa Ilaya Resort logo" width="150" style="display:block;width:150px;max-width:100%;height:auto;margin:0 auto 8px;background:#fff">
         <div style="font-size:18px;line-height:1.3;font-weight:700;color:#111827">Kasa Ilaya Resort &amp; Event Place</div>
         <div style="font-size:13px;line-height:1.5;color:#52616b">Sitio Pook na Munti<br>brgy. Kaong, Silang, Cavite</div>
       </td></tr>
@@ -150,8 +165,9 @@ function bookingEmailHtml(booking, { admin = false, receiptAttached = false } = 
 }
 
 async function sendBookingSubmissionEmails(booking) {
-  const attachments = await loadBookingReceiptAttachment(booking);
-  const receiptAttached = attachments.length > 0;
+  const paymentProofAttachments = await loadBookingReceiptAttachment(booking);
+  const attachments = [loadBookingEmailLogoAttachment(), ...paymentProofAttachments].filter(Boolean);
+  const receiptAttached = paymentProofAttachments.length > 0;
   const customer = await sendMail(
     booking.customer_email,
     `Reservation received - ${booking.booking_reference || booking.id} | Kasa Ilaya Resort`,
@@ -374,6 +390,7 @@ module.exports = {
   createNotification,
   notifySafely,
   notifyBookingAdmins,
+  loadBookingEmailLogoAttachment,
   bookingEmailHtml,
   sendBookingSubmissionEmails,
   sendBookingStatusEmail,
