@@ -6,6 +6,9 @@ const { sendMail } = require('./mail');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const RESORT_LOCATION = 'Sitio Pook na Munti, Brgy. Kaong, Silang, Cavite';
+const RESORT_MAP_URL = 'https://maps.app.goo.gl/Z6Ch18vjF6L4rq4FA';
+
 async function createNotification({ email, eventKey, title, description, link, entityId, actorName, actorProfileImageUrl }) {
   if (!email || !eventKey) return false;
   const [result] = await pool.query(
@@ -233,6 +236,9 @@ async function sendBookingStatusEmail(booking, status, reason = '') {
     : detail
       ? `<p>${escapeHtml(detail)}</p>`
       : '<p>This cancellation has been recorded in your reservation.</p>';
+  const locationHtml = confirmed
+    ? `<p><strong>Resort location:</strong> ${escapeHtml(RESORT_LOCATION)}<br><a href="${escapeHtml(RESORT_MAP_URL)}">View directions on Google Maps</a></p>`
+    : '';
 
   const result = await sendMail(
     booking.customer_email,
@@ -242,6 +248,7 @@ async function sendBookingStatusEmail(booking, status, reason = '') {
      <p><strong>Package:</strong> ${escapeHtml(booking.package_name || 'Resort booking')}<br>
      <strong>Reservation date:</strong> ${escapeHtml(displayDate)}</p>
      ${detailHtml}
+     ${locationHtml}
      <p><a href="${escapeHtml(bookingsUrl)}" style="display:inline-block;background:#0d5558;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:7px;font-weight:bold;">View my bookings</a></p>
      <p>If you have questions, please contact Kasa Ilaya Resort.</p>`,
     confirmed ? 'booking_confirmed' : rejected ? 'booking_rejected' : 'booking_cancelled'
@@ -295,7 +302,9 @@ async function sendUpcomingBookingReminders() {
        <p>This is a friendly reminder that your confirmed booking is coming up tomorrow.</p>
        <p><strong>Package:</strong> ${escapeHtml(booking.package_name || 'Resort booking')}<br>
        <strong>Booking reference:</strong> ${escapeHtml(booking.booking_reference || booking.id)}<br>
-       <strong>Schedule:</strong> ${escapeHtml(displayDate)} at ${escapeHtml(displayTime)} (Philippine time)</p>
+       <strong>Schedule:</strong> ${escapeHtml(displayDate)} at ${escapeHtml(displayTime)} (Philippine time)<br>
+       <strong>Resort location:</strong> ${escapeHtml(RESORT_LOCATION)}</p>
+       <p><a href="${escapeHtml(RESORT_MAP_URL)}" style="display:inline-block;background:#0d5558;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:7px;font-weight:bold;">View directions on Google Maps</a></p>
        <p>We look forward to welcoming you. You can review your booking details below.</p>
        <p><a href="${escapeHtml(bookingsUrl)}" style="display:inline-block;background:#0d5558;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:7px;font-weight:bold;">View my booking</a></p>`,
       'booking_reminder'
