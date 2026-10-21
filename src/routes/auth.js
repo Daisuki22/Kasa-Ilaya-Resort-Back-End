@@ -886,6 +886,92 @@ router.post('/', async (req, res, next) => {
       return res.json({ success: true, email_sent: true });
     }
 
+    if (action === 'admin-reset-password-with-temporary-password') {
+      if (!req.user) return res.status(401).json({ error: 'Not authenticated.' });
+      if ((req.user.role || req.user.app_role) !== 'super_admin') {
+        return res.status(403).json({ error: 'Only a super admin can reset admin passwords.' });
+      }
+
+      const userId = String(p.user_id || '').trim();
+      if (!userId) return res.status(422).json({ error: 'Choose an admin account first.' });
+
+      const connection = await pool.getConnection();
+      let transactionStarted = false;
+      try {
+        await connection.beginTransaction();
+        transactionStarted = true;
+
+        const [users] = await connection.query(
+          'SELECT id,email,full_name,role,app_role,disabled FROM users WHERE id=? LIMIT 1 FOR UPDATE',
+          [userId]
+        );
+        const target = users[0];
+        if (!target || target.disabled || ![target.role, target.app_role].includes('admin')) {
+          await connection.rollback();
+          transactionStarted = false;
+          return res.status(404).json({ error: 'The active admin account was not found.' });
+        }
+
+        const temporaryPassword = `${crypto.randomBytes(18).toString('base64url')}Aa1!`;
+        const passwordHash = await bcrypt.hash(temporaryPassword, 12);
+        const changedAt = now();
+        await connection.query(
+          'UPDATE users SET password_hash=?,updated_date=? WHERE id=?',
+          [passwordHash, changedAt, target.id]
+        );
+        await connection.query(
+          `UPDATE password_reset_tokens SET used_at=?
+           WHERE user_id=? AND used_at IS NULL`,
+          [changedAt, target.id]
+        );
+        await connection.query(
+          `UPDATE auth_sessions SET revoked_at=?
+           WHERE user_id=? AND revoked_at IS NULL AND expires_at>?`,
+          [changedAt, target.id, changedAt]
+        );
+
+        const escapeHtml = (value) => String(value || '').replace(/[&<>"']/g, (character) => ({
+          '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        })[character]);
+        const mail = await sendMail(
+          target.email,
+          'Your Kasa Ilaya Resort admin password was reset',
+          `<p>Hello ${escapeHtml(target.full_name || 'there')},</p>
+           <p>A super admin reset the password for your Kasa Ilaya Resort admin account.</p>
+           <p>Your temporary password is:</p>
+           <p style="display:inline-block;background:#f4f1ea;border:1px solid #ded6c8;border-radius:8px;padding:14px 18px;font-family:monospace;font-size:18px;font-weight:bold;letter-spacing:1px;">${escapeHtml(temporaryPassword)}</p>
+           <p>Use this password to sign in. For your security, change it after signing in. Your other active sessions have been signed out.</p>
+           <p>If you did not expect this change, contact the resort super admin immediately.</p>`,
+          'admin_temporary_password'
+        );
+
+        if (!mail.sent) {
+          await connection.rollback();
+          transactionStarted = false;
+          return res.status(502).json({ error: mail.error || 'Unable to send the temporary password email. The password was not changed.' });
+        }
+
+        try {
+          await connection.query(
+            `INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details)
+             VALUES (?,?,?,?,?,?,?,?,?)`,
+            [id('activitylog'), changedAt, changedAt, req.user.email || null, req.user.full_name || req.user.name || 'Super admin', 'Reset Admin Password', 'User', target.id, `Reset the admin password and emailed a temporary password to ${target.email}.`]
+          );
+        } catch (error) {
+          console.error('Admin temporary password audit log failed', { userId: target.id, code: error.code });
+        }
+
+        await connection.commit();
+        transactionStarted = false;
+        return res.json({ success: true, email_sent: true });
+      } catch (error) {
+        if (transactionStarted) await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+    }
+
     /* =====================================================
        LOGIN
     ===================================================== */
