@@ -453,15 +453,17 @@ router.get('/', async (req, res, next) => {
 
     if (action === 'admin-account-recovery-list') {
       if (!req.user) return res.status(401).json({ error: 'Not authenticated.' });
-      if ((req.user.role || req.user.app_role) !== 'super_admin') {
-        return res.status(403).json({ error: 'Only a super admin can review account recovery requests.' });
+      const actorRole = req.user.role || req.user.app_role;
+      if (!['admin', 'super_admin'].includes(actorRole)) {
+        return res.status(403).json({ error: 'Only resort administrators can access account recovery requests.' });
       }
+      const adminScope = actorRole === 'super_admin' ? '' : " AND u.role='guest'";
       const [rows] = await pool.query(
         `SELECT r.id,r.old_email,r.requested_email,r.full_name,r.phone,r.booking_reference,r.reason,r.created_date,
                 u.email AS account_email,u.full_name AS account_full_name,u.phone AS account_phone
          FROM account_recovery_requests r
          LEFT JOIN users u ON u.id=r.user_id
-         WHERE r.status='pending'
+         WHERE r.status='pending'${adminScope}
          ORDER BY r.created_date ASC LIMIT 100`
       );
       return res.json(rows);
@@ -573,8 +575,9 @@ router.post('/', async (req, res, next) => {
 
     if (action === 'admin-review-account-recovery') {
       if (!req.user) return res.status(401).json({ error: 'Not authenticated.' });
-      if ((req.user.role || req.user.app_role) !== 'super_admin') {
-        return res.status(403).json({ error: 'Only a super admin can review account recovery requests.' });
+      const actorRole = req.user.role || req.user.app_role;
+      if (!['admin', 'super_admin'].includes(actorRole)) {
+        return res.status(403).json({ error: 'Only resort administrators can review account recovery requests.' });
       }
       const requestId = String(p.request_id || '').trim();
       const decision = String(p.decision || '').trim().toLowerCase();
@@ -600,7 +603,7 @@ router.post('/', async (req, res, next) => {
       try {
         await connection.beginTransaction();
         const [requests] = await connection.query(
-          `SELECT r.*,u.email AS account_email,u.disabled
+          `SELECT r.*,u.email AS account_email,u.disabled,u.role AS account_role
            FROM account_recovery_requests r
            LEFT JOIN users u ON u.id=r.user_id
            WHERE r.id=? FOR UPDATE`,
@@ -614,6 +617,14 @@ router.post('/', async (req, res, next) => {
         if (!recovery.account_email || recovery.disabled) {
           await connection.rollback();
           return res.status(409).json({ error: 'The account is no longer eligible for recovery.' });
+        }
+        if (actorRole === 'admin' && recovery.account_role !== 'guest') {
+          await connection.rollback();
+          return res.status(403).json({ error: 'Only a super admin can review recovery requests for administrator accounts.' });
+        }
+        if (String(req.user.id) === String(recovery.user_id)) {
+          await connection.rollback();
+          return res.status(403).json({ error: 'You cannot review your own account recovery request.' });
         }
 
         if (decision === 'decline') {
