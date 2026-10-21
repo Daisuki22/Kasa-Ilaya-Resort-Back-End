@@ -438,6 +438,10 @@ async function acceptBooking(req,res){
    if(!bookingEndTime||bookingEndTime<=new Date())throw httpError('This booking can no longer be accepted because its checkout time has passed.',409);
    const receiptImage=await getUploadedReceiptBuffer(booking.receipt_url,connection);
    if(!receiptImage)throw httpError('A valid payment receipt is required before accepting this booking.',422);
+   let refreshedReceiptOcr=null;
+   if(!Number.isFinite(Number(booking.payment_proof_ocr_amount))||Number(booking.payment_proof_ocr_amount)<=0){
+    try{refreshedReceiptOcr=await recognizeReceipt(receiptImage);}catch{}
+   }
    if(booking.payment_status!=='pending_verification'&&!(outdatedReceipt&&booking.payment_status==='declined'))throw httpError('Only bookings with a submitted payment proof can be accepted.',422);
    if(booking.payment_proof_review==='auto_declined'&&!outdatedReceipt)throw httpError('This payment proof was automatically declined and cannot be accepted.',422);
    if(outdatedReceipt&&booking.payment_proof_fingerprint){
@@ -454,23 +458,26 @@ async function acceptBooking(req,res){
    if(!String(booking.payment_mode||booking.payment_qr_code_label||'').trim())throw httpError('The booking payment method is missing.',422);
    const [qrRows]=await connection.query('SELECT id,label,is_active FROM payment_qr_codes WHERE id=? LIMIT 1 FOR UPDATE',[booking.payment_qr_code_id]);
    if(!qrRows[0]||!qrRows[0].is_active)throw httpError('The selected payment method is no longer active. Do not accept this receipt.',422);
-   const receiptProvider=classifyPaymentProvider(booking.payment_proof_ocr_provider);
+   const receiptProvider=classifyPaymentProvider(refreshedReceiptOcr?.provider||booking.payment_proof_ocr_provider);
    const selectedProvider=classifyPaymentProvider(qrRows[0].label);
    if(receiptProvider&&selectedProvider&&receiptProvider!==selectedProvider){
     throw httpError('The receipt payment provider does not match the selected resort payment method. Do not accept this receipt.',422);
    }
    if(!Number.isFinite(Number(booking.payment_amount_due))||Number(booking.payment_amount_due)<=0)throw httpError('A valid payment amount is required before accepting this booking.',422);
-   const receiptDate=booking.payment_proof_ocr_date instanceof Date
+   const refreshedReceiptDate=refreshedReceiptOcr?.date;
+   const receiptDate=refreshedReceiptDate|| (booking.payment_proof_ocr_date instanceof Date
     ?booking.payment_proof_ocr_date.toISOString().slice(0,10)
-    :String(booking.payment_proof_ocr_date||'').slice(0,10);
+    :String(booking.payment_proof_ocr_date||'').slice(0,10));
    if(!/^\d{4}-\d{2}-\d{2}$/.test(receiptDate))throw httpError('The receipt date could not be verified. Review the original receipt date before accepting.',422);
    if(receiptDate>getTodayManilaDate())throw httpError('The receipt date is in the future. Verify the original receipt before accepting.',422);
-   const receiptAmount=Number(booking.payment_proof_ocr_amount);
+   const refreshedReceiptAmount=Number(refreshedReceiptOcr?.amount);
+   const receiptAmount=Number.isFinite(refreshedReceiptAmount)&&refreshedReceiptAmount>0
+    ?refreshedReceiptAmount:Number(booking.payment_proof_ocr_amount);
    if(!Number.isFinite(receiptAmount)||receiptAmount<=0)throw httpError('The receipt amount could not be verified. Upload a receipt showing the current booking fee.',422);
    if(Math.round(receiptAmount*100)!==Math.round(currentQuote.payment_amount_due*100)){
     throw httpError('Payment amount does not match the booking fee. An updated receipt is required.',422);
    }
-  await connection.query("UPDATE bookings SET status='confirmed',approved_by=?,approved_at=NOW(),rejected_by=NULL,rejected_at=NULL,payment_status='paid',payment_proof_review='verified',rejection_reason=NULL,updated_date=NOW() WHERE id=? AND status=?",[String(req.user.id||'').slice(0,64),booking.id,booking.status]);
+  await connection.query("UPDATE bookings SET status='confirmed',approved_by=?,approved_at=NOW(),rejected_by=NULL,rejected_at=NULL,payment_status='paid',payment_proof_review='verified',rejection_reason=NULL,payment_proof_ocr_provider=COALESCE(?,payment_proof_ocr_provider),payment_proof_ocr_amount=COALESCE(?,payment_proof_ocr_amount),payment_proof_ocr_date=COALESCE(?,payment_proof_ocr_date),payment_proof_ocr_confidence=COALESCE(?,payment_proof_ocr_confidence),updated_date=NOW() WHERE id=? AND status=?",[String(req.user.id||'').slice(0,64),refreshedReceiptOcr?.provider||null,Number.isFinite(refreshedReceiptAmount)&&refreshedReceiptAmount>0?refreshedReceiptAmount:null,refreshedReceiptDate||null,Number.isFinite(Number(refreshedReceiptOcr?.confidence))?Number(refreshedReceiptOcr.confidence):null,booking.id,booking.status]);
   await connection.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?)',[id('activitylog'),now(),now(),req.user.email||null,req.user.full_name||req.user.name||'Administrator','Booking accepted and payment manually verified','Booking',booking.id,`Accepted ${booking.booking_reference} and manually verified the submitted ${booking.payment_mode||booking.payment_qr_code_label} proof for ${Number(booking.payment_amount_due).toFixed(2)}.`]);
   const [updatedRows]=await connection.query('SELECT * FROM bookings WHERE id=? LIMIT 1',[booking.id]);
   await connection.commit();
