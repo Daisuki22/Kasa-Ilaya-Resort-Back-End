@@ -11,7 +11,7 @@ const {findExistingBookingSubmission}=require('../services/bookingSubmission');
 const {validateRequiredBookingPayment}=require('../services/bookingPaymentValidation');
 const {validateReceiptSignals}=require('../services/receiptValidation');
 const {synchronizeBookingStatuses}=require('../services/bookingExpiration');
-const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,calendarDaysUntil,dateKeyFromDate,getTodayManilaDate,getBookingEndDateTime,getBookingStartDateTime,getTourTime,isBookingCancellationAllowed,isScheduleAvailable,isValidDateKey}=require('../services/bookingSchedule');
+const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,calendarDaysUntil,dateKeyFromDate,getTodayManilaDate,getBookingEndDateTime,getBookingStartDateTime,getTourTime,isBookingCancellationAllowed,isScheduleAvailable,isTourStartTimePassed,isValidDateKey}=require('../services/bookingSchedule');
 const BOOKING_SCHEDULE_LOCK='kasa_ilaya_booking_schedule';
 const MAP={
  ActivityLog:{table:'activity_logs',fields:['id','created_date','updated_date','user_email','user_name','actor_role','action','entity_type','entity_id','details']},
@@ -820,7 +820,8 @@ async function validate(entity,record,exclude,db=pool){
   if(!exclude)await applyBookingPricing(record,db);
   const date=dateOnly(record.booking_date);
   if(!isValidDateKey(date)||!getTourTime(record.tour_type))throw Object.assign(new Error('Booking date and tour type must be valid.'),{status:422});
-  if(date<=dateKeyFromDate(new Date()))throw Object.assign(new Error('Choose a future booking date.'),{status:422});
+  if(date<dateKeyFromDate(new Date()))throw Object.assign(new Error('Choose today or a future booking date.'),{status:422});
+  if(isTourStartTimePassed(date,record.tour_type))throw httpError(`The ${getTourTime(record.tour_type).label} tour has already started for today. Choose another tour or date.`,409,'BOOKING_TOUR_ALREADY_STARTED');
   const guests=Number(record.guest_count||0);
   if(guests<1)throw Object.assign(new Error('Guest count must be at least 1.'),{status:422});
   if(!exclude&&!await databaseScheduleIsAvailable(db,date,record.tour_type,null,db!==pool))throw httpError('The selected schedule is unavailable. Please choose another date or time.',409,'BOOKING_SCHEDULE_UNAVAILABLE');

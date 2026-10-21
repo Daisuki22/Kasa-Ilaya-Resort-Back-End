@@ -72,10 +72,12 @@ const isScheduleAvailable = ({
   bookings = [],
   manualDates = [],
   excludeBookingId = null,
+  now = new Date(),
 }) => {
   if (!isValidDateKey(bookingDate) || !getTourTime(tourType)) return false;
   const candidateStart = getBookingStartDateTime(bookingDate, tourType);
   const candidateEnd = getBookingEndDateTime(bookingDate, tourType);
+  if (!candidateStart || candidateStart <= now) return false;
   const requiredDates = [bookingDate];
   if (["night_tour", "22_hours"].includes(tourType)) {
     requiredDates.push(addDateKeyDays(bookingDate, 1));
@@ -103,6 +105,11 @@ const getBookingStartDateTime = (bookingDate, tourType) => {
   return new Date(`${bookingDate}T${time}:00+08:00`);
 };
 
+const isTourStartTimePassed = (bookingDate, tourType, now = new Date()) => {
+  const start = getBookingStartDateTime(bookingDate, tourType);
+  return Boolean(start && start <= now);
+};
+
 const getBookingEndDateTime = (bookingDate, tourType) => {
   const time = getTourTime(tourType)?.end;
   if (!time || !isValidDateKey(bookingDate)) return null;
@@ -122,6 +129,7 @@ module.exports = {
   getBookingStartDateTime,
   getOccupiedDateKeys,
   getTourTime,
+  isTourStartTimePassed,
   isScheduleAvailable,
   isCancellationDateEligible,
   isBookingCancellationAllowed,
