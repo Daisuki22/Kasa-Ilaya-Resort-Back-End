@@ -588,7 +588,7 @@ router.post('/', async (req, res, next) => {
       if (decision === 'decline' && reviewNote.length < 5) {
         return res.status(422).json({ error: 'Add a brief reason before declining this recovery request.' });
       }
-      const recoveryOrigin = decision === 'approve' ? getTrustedFrontendOrigin(req) : '';
+      const recoveryOrigin = getTrustedFrontendOrigin(req);
       if (decision === 'approve' && !recoveryOrigin) {
         return res.status(503).json({ error: 'The recovery link cannot be created because the frontend URL is not configured.' });
       }
@@ -628,42 +628,43 @@ router.post('/', async (req, res, next) => {
             [id('activitylog'), reviewedAt, reviewedAt, req.user.email || null, req.user.full_name || req.user.name || 'Super admin', 'super_admin', 'Declined account recovery request', 'User', recovery.user_id, `Declined recovery request ${requestId}. ${reviewNote}`]
           );
           await connection.commit();
-          return res.json({ success: true, decision: 'declined' });
-        }
+          recoveryEmail = recovery.requested_email;
+          recoveryFullName = recovery.full_name;
+        } else {
+          const [emailOwners] = await connection.query(
+            'SELECT id FROM users WHERE LOWER(email)=LOWER(?) AND id<>? LIMIT 1 FOR UPDATE',
+            [recovery.requested_email, recovery.user_id]
+          );
+          if (emailOwners.length) {
+            await connection.rollback();
+            return res.status(409).json({ error: 'The requested email is already connected to another account. Ask the user to submit a different email.' });
+          }
 
-        const [emailOwners] = await connection.query(
-          'SELECT id FROM users WHERE LOWER(email)=LOWER(?) AND id<>? LIMIT 1 FOR UPDATE',
-          [recovery.requested_email, recovery.user_id]
-        );
-        if (emailOwners.length) {
-          await connection.rollback();
-          return res.status(409).json({ error: 'The requested email is already connected to another account. Ask the user to submit a different email.' });
+          recoveryToken = crypto.randomBytes(32).toString('hex');
+          const tokenHash = sha256(recoveryToken);
+          const reviewedAt = now();
+          await connection.query(
+            `UPDATE password_reset_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL`,
+            [reviewedAt, recovery.user_id]
+          );
+          await connection.query(
+            `INSERT INTO password_reset_tokens (id,user_id,token_hash,purpose,attempts,recovery_request_id,created_date,expires_at)
+             VALUES (?,?,?,'account_recovery',0,?,?,?)`,
+            [id('resettoken'), recovery.user_id, tokenHash, requestId, reviewedAt, new Date(Date.now() + 900000).toISOString().slice(0, 19).replace('T', ' ')]
+          );
+          await connection.query(
+            `UPDATE account_recovery_requests SET status='approved',reviewed_by=?,reviewed_at=?,review_note=?,updated_date=? WHERE id=? AND status='pending'`,
+            [req.user.id, reviewedAt, reviewNote || null, reviewedAt, requestId]
+          );
+          await connection.query(
+            `INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,actor_role,action,entity_type,entity_id,details)
+             VALUES (?,?,?,?,?,?,?,?,?,?)`,
+            [id('activitylog'), reviewedAt, reviewedAt, req.user.email || null, req.user.full_name || req.user.name || 'Super admin', 'super_admin', 'Approved account recovery request', 'User', recovery.user_id, `Approved recovery request ${requestId}; a one-time link was issued to ${recovery.requested_email}.`]
+          );
+          await connection.commit();
+          recoveryEmail = recovery.requested_email;
+          recoveryFullName = recovery.full_name;
         }
-
-        recoveryToken = crypto.randomBytes(32).toString('hex');
-        const tokenHash = sha256(recoveryToken);
-        const reviewedAt = now();
-        await connection.query(
-          `UPDATE password_reset_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL`,
-          [reviewedAt, recovery.user_id]
-        );
-        await connection.query(
-          `INSERT INTO password_reset_tokens (id,user_id,token_hash,purpose,attempts,recovery_request_id,created_date,expires_at)
-           VALUES (?,?,?,'account_recovery',0,?,?,?)`,
-          [id('resettoken'), recovery.user_id, tokenHash, requestId, reviewedAt, new Date(Date.now() + 900000).toISOString().slice(0, 19).replace('T', ' ')]
-        );
-        await connection.query(
-          `UPDATE account_recovery_requests SET status='approved',reviewed_by=?,reviewed_at=?,review_note=?,updated_date=? WHERE id=? AND status='pending'`,
-          [req.user.id, reviewedAt, reviewNote || null, reviewedAt, requestId]
-        );
-        await connection.query(
-          `INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,actor_role,action,entity_type,entity_id,details)
-           VALUES (?,?,?,?,?,?,?,?,?,?)`,
-          [id('activitylog'), reviewedAt, reviewedAt, req.user.email || null, req.user.full_name || req.user.name || 'Super admin', 'super_admin', 'Approved account recovery request', 'User', recovery.user_id, `Approved recovery request ${requestId}; a one-time link was issued to ${recovery.requested_email}.`]
-        );
-        await connection.commit();
-        recoveryEmail = recovery.requested_email;
-        recoveryFullName = recovery.full_name;
       } catch (error) {
         try { await connection.rollback(); } catch {}
         throw error;
@@ -671,13 +672,34 @@ router.post('/', async (req, res, next) => {
         connection.release();
       }
 
+      if (decision === 'decline') {
+        const recoveryUrl = recoveryOrigin ? new URL('/AccountRecoveryHelp', recoveryOrigin).toString() : '';
+        const recoveryLink = recoveryUrl
+          ? `<p>If you have additional details, you can submit a new request <a href="${escapeAuthHtml(recoveryUrl)}">here</a>.</p>`
+          : '';
+        const mail = await sendMail(
+          recoveryEmail,
+          'Update on your Kasa Ilaya Resort account recovery request',
+          `<p>Hello ${escapeAuthHtml(recoveryFullName || 'there')},</p>
+           <p>Your account recovery request was reviewed and declined by a resort super admin.</p>
+           <p><strong>Reason from the admin:</strong></p>
+           <blockquote style="margin:12px 0;padding:12px 16px;border-left:4px solid #0d5558;background:#f4f6f5">${escapeAuthHtml(reviewNote)}</blockquote>
+           ${recoveryLink}
+           <p>If you need clarification, contact us at <a href="mailto:info@kasailaya.com">info@kasailaya.com</a> or call <a href="tel:+639053869255">09053869255</a>. Do not send your password by email.</p>`,
+          'account_recovery_declined'
+        );
+        if (!mail.sent) console.error('Account recovery decline email was not delivered', { requestId, error: mail.error });
+        return res.json({ success: true, decision: 'declined', email_sent: mail.sent });
+      }
+
       const resetUrl = new URL('/ResetPassword', recoveryOrigin);
       resetUrl.searchParams.set('token', recoveryToken);
       const mail = await sendMail(
         recoveryEmail,
-        'Complete your Kasa Ilaya Resort account recovery',
+        'Your account recovery request was approved | Kasa Ilaya Resort',
         `<p>Hello ${escapeAuthHtml(recoveryFullName || 'there')},</p>
-         <p>Your account recovery request was reviewed by a resort super admin. Use this one-time link to verify your new email address and set a new password.</p>
+         <p>Your account recovery request has been <strong>approved</strong> by a resort super admin. Use this one-time link to verify your new email address and set a new password.</p>
+         ${reviewNote ? `<p><strong>Admin comment:</strong> ${escapeAuthHtml(reviewNote)}</p>` : ''}
          <p><a href="${escapeAuthHtml(resetUrl.toString())}" style="display:inline-block;background:#0d5558;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:7px;font-weight:bold;">Verify email and reset password</a></p>
          <p>This link expires in 15 minutes and works once. If you did not request this, contact Kasa Ilaya Resort using its official contact details.</p>`,
         'account_recovery'
