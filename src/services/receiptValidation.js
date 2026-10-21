@@ -89,8 +89,6 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
       : `Receipt date is invalid. Only receipts dated today are accepted. Receipt date: ${validDate}. Required date: ${latestAllowedDate}.`;
   } else if (sampleReceipt) {
     declineReason = 'Sample or test receipts are not accepted. Upload the original payment receipt.';
-  } else if (latestAllowedDate && !validDate) {
-    declineReason = 'The receipt transaction date could not be verified. Upload a clear receipt showing the payment date.';
   } else if (hasExtractedAmount || hasPhpEquivalent) {
     const expectedAmount = Number(requiredAmount);
     if (!Number.isFinite(expectedAmount) || expectedAmount <= 0 || comparableAmount === null) {
@@ -98,24 +96,28 @@ function validateReceiptSignals({ ocr = {}, requiredAmount, selectedMethod, expe
     } else if (Math.round(comparableAmount * 100) !== Math.round(expectedAmount * 100)) {
       declineReason = 'Payment amount does not match required amount.';
     }
-  } else if (detectedProvider && selectedProvider && detectedProvider !== selectedProvider) {
+  }
+
+  // Validate other signals even when an amount was extracted and matched. A
+  // matching amount must not mask a mismatched payment provider or account.
+  if (!declineReason && detectedProvider && selectedProvider && detectedProvider !== selectedProvider) {
     declineReason = 'Payment method does not match selected payment method.';
-  } else if (confident && expectedAccountDigits.length >= 5 && recipientDigits.length === expectedAccountDigits.length
+  } else if (!declineReason && confident && expectedAccountDigits.length >= 5 && recipientDigits.length === expectedAccountDigits.length
       && recipientDigits !== expectedAccountDigits) {
     declineReason = 'Payment method does not match selected payment method.';
-  } else if (confident && ocr.recipient && expectedAccountName && !recipientMatchesExpected(ocr.recipient, expectedAccountName)) {
+  } else if (!declineReason && confident && ocr.recipient && expectedAccountName && !recipientMatchesExpected(ocr.recipient, expectedAccountName)) {
     declineReason = 'The receipt recipient does not match the selected resort payment account.';
-  } else if (confident && extractedPaymentNumber && submittedPaymentNumber
+  } else if (!declineReason && confident && extractedPaymentNumber && submittedPaymentNumber
       && !paymentNumberMatches(extractedPaymentNumber, submittedPaymentNumber)) {
     declineReason = 'Invalid payment/reference information.';
-  } else if (confident && extractedReference && submittedReference
+  } else if (!declineReason && confident && extractedReference && submittedReference
       && extractedReference.toLowerCase() !== String(submittedReference).trim().toLowerCase()) {
     declineReason = 'Invalid payment/reference information.';
-  } else if (confident && ocr.status === 'failed') {
+  } else if (!declineReason && confident && ocr.status === 'failed') {
     declineReason = 'Unable to verify receipt information.';
-  } else if (confident && ocr.status === 'pending') {
+  } else if (!declineReason && confident && ocr.status === 'pending') {
     declineReason = 'This shows a pending authorization, not a completed payment receipt.';
-  } else if (notReceipt) {
+  } else if (!declineReason && notReceipt) {
     declineReason = 'This image does not appear to show a payment receipt. Upload a screenshot with visible payment details.';
   }
 

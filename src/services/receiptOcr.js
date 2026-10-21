@@ -129,7 +129,8 @@ const extractDate = (text) => {
   match = source.match(/\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})\b/);
   if (match) return normalizeDate(match[3].length === 2 ? `20${match[3]}` : match[3], match[1], match[2]);
 
-  match = source.match(/\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2}),?\s+(20\d{2})\b/i);
+  // OCR often drops the space after the comma in dates such as "Oct 21,2026".
+  match = source.match(/\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2}),?\s*(20\d{2})\b/i);
   if (!match) return null;
   const month = new Date(`${match[1]} 1, ${match[3]} UTC`).getUTCMonth() + 1;
   return normalizeDate(match[3], month, match[2]);
@@ -144,7 +145,9 @@ const extractReference = (text) => {
   const start = labelMatch.index + labelMatch[0].length;
   const valueWindow = source.slice(start, start + 140)
     .replace(/^\s*[:#=-]?\s*/, '')
-    .split(/\b(?:date(?:\s*(?:&|and)\s*time)?|time|amount|status|successful|completed|paid|sent\s+to|recipient|balance|service\s+fee|fee)\b\s*[:#=-]?/i, 1)[0];
+    .split(/\b(?:date(?:\s*(?:&|and)\s*time)?|time|amount|status|successful|completed|paid|sent\s+to|recipient|balance|service\s+fee|fee)\b\s*[:#=-]?/i, 1)[0]
+    // Some GCash layouts put the date directly after "Ref No." with no label.
+    .replace(/\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s*20\d{2}\b[\s\S]*$/i, '');
   const candidate = valueWindow.match(/[A-Z0-9][A-Z0-9\s-]{3,60}[A-Z0-9]/i);
   if (!candidate) return null;
 
@@ -218,8 +221,14 @@ const extractReceiptFields = ({ text, confidence }) => {
   const pending = /\b(pending|processing|will authorize|authorization pending|awaiting confirmation|payment not completed)\b/.test(normalized);
   const success = /\b(successful|success|completed|paid|sent|received)\b/.test(normalized);
 
-  const amountDetails = extractAmountDetails(content);
   const provider = classifyPaymentProvider(content);
+  let amountDetails = extractAmountDetails(content);
+  // GCash and other local Philippine payment rails settle in PHP. OCR commonly
+  // mistakes the peso sign for "$" or "£" on their receipts.
+  const localPaymentProviders = new Set(['gcash', 'maya', 'bdo', 'bpi', 'unionbank', 'seabank', 'gotyme', 'metrobank']);
+  if (localPaymentProviders.has(provider) && ['USD', 'GBP'].includes(amountDetails.currency) && amountDetails.phpEquivalent === null) {
+    amountDetails = { ...amountDetails, currency: 'PHP', phpEquivalent: amountDetails.amount };
+  }
   const reference = extractReference(content);
   const date = extractDate(content);
   const sampleReceipt = /\b(?:sample|demo|for\s+testing\s+only|not\s+a\s+real\s+(?:transaction|receipt))\b/i.test(content);

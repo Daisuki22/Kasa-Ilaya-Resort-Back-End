@@ -31,6 +31,21 @@ test('OCR parser extracts date, reference, status and clamps confidence', () => 
   assert.equal(extractDate('2026-02-30'), null);
 });
 
+test('OCR parses a GCash Express Send receipt with an inline date and misread peso sign', () => {
+  const result = extractReceiptFields({
+    text: 'Express Send\nMe CHeeoooe A S.\n+63 Gee 000 8271\nSent via GCash\nAmount $7,000.00\nTotal Amount Sent $7,000.00\nRef No. 2354 5652 2642 Oct 21,2026 10:56 AM',
+    confidence: 80,
+  });
+
+  assert.equal(result.provider, 'gcash');
+  assert.equal(result.amount, 7000);
+  assert.equal(result.amountCurrency, 'PHP');
+  assert.equal(result.phpEquivalent, 7000);
+  assert.equal(result.reference, '235456522642');
+  assert.equal(result.date, '2026-10-21');
+  assert.equal(result.status, 'successful');
+});
+
 test('OCR parser extracts a labeled payment account number', () => {
   const result = extractReceiptFields({
     text: 'GCash\nAccount Number: 0917 123 4567\nAmount Sent: PHP 1,500.00\nReference No: ABCD123456',

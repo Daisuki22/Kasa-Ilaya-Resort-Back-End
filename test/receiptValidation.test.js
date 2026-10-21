@@ -113,6 +113,7 @@ test('an outdated date takes priority over amount and payment method mismatches'
 test('unreadable or incomplete receipts remain pending for manual review', () => {
   for (const ocr of [
     { confidence: 20 },
+    { ...validReceipt, date: null },
     { ...validReceipt, paymentNumber: null, reference: null },
     { ...validReceipt, amount: null, date: null },
   ]) {
