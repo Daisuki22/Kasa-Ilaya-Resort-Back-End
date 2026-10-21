@@ -64,17 +64,17 @@ test("cancellation requires an active booking more than seven resort calendar da
 
 test("respects fixed tour windows and Philippine local time", () => {
   assert.deepEqual(getTourTime("day_tour"), {
-    start: "08:00",
-    end: "18:00",
-    label: "8:00 AM - 6:00 PM",
+    start: "07:00",
+    end: "17:00",
+    label: "7:00 AM - 5:00 PM",
   });
   assert.equal(
     getBookingStartDateTime("2026-10-05", "night_tour").toISOString(),
-    "2026-10-05T10:00:00.000Z"
+    "2026-10-05T11:00:00.000Z"
   );
-  assert.equal(getBookingEndDateTime("2026-10-05", "day_tour").toISOString(), "2026-10-05T10:00:00.000Z");
-  assert.equal(getBookingEndDateTime("2026-10-05", "night_tour").toISOString(), "2026-10-05T22:00:00.000Z");
-  assert.equal(getBookingEndDateTime("2026-10-05", "22_hours").toISOString(), "2026-10-06T08:00:00.000Z");
+  assert.equal(getBookingEndDateTime("2026-10-05", "day_tour").toISOString(), "2026-10-05T09:00:00.000Z");
+  assert.equal(getBookingEndDateTime("2026-10-05", "night_tour").toISOString(), "2026-10-05T21:00:00.000Z");
+  assert.equal(getBookingEndDateTime("2026-10-05", "22_hours").toISOString(), "2026-10-06T09:00:00.000Z");
   assert.equal(getTourTime("custom_time"), null);
 });
 

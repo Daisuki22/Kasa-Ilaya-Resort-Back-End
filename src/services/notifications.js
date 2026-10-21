@@ -87,9 +87,9 @@ async function loadBookingReceiptAttachment(booking) {
 
 function bookingEmailHtml(booking, { admin = false, receiptAttached = false } = {}) {
   const tourLabels = {
-    day_tour: 'Day Tour (8 AM – 6 PM)',
-    night_tour: 'Night Tour (6 PM – 6 AM)',
-    '22_hours': '22 Hours (6 PM – 4 PM next day)',
+    day_tour: 'Day Tour (7 AM – 5 PM)',
+    night_tour: 'Night Tour (7 PM – 5 AM next day)',
+    '22_hours': '22 Hours (7 PM – 5 PM next day)',
   };
   const dateValue = booking.booking_date instanceof Date
     ? booking.booking_date.toISOString().slice(0, 10)
