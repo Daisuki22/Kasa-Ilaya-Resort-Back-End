@@ -223,6 +223,14 @@ const extractReceiptFields = ({ text, confidence }) => {
 
   const provider = classifyPaymentProvider(content);
   let amountDetails = extractAmountDetails(content);
+  if (provider === 'paypal' && amountDetails.currency === 'USD' && amountDetails.phpEquivalent === null) {
+    // PayPal receipts show the converted card charge near "Paid with". OCR
+    // commonly mistakes the peso sign on that card charge for "$" or "£".
+    const paidWithBlock = content.match(/\bpaid\s+with\b([\s\S]{0,180}?)(?=\b(?:amount|total|your\s+exchange\s+rate|order\s+summary)\b)/i)?.[1] || '';
+    const cardCharge = paidWithBlock.match(/(?:\$|₱|£|\bPHP\b)\s*([\d,]+(?:\.\d{1,2})?)/iu);
+    const phpEquivalent = cardCharge ? parseAmount(cardCharge[1]) : null;
+    if (phpEquivalent !== null) amountDetails = { ...amountDetails, phpEquivalent };
+  }
   // GCash and other local Philippine payment rails settle in PHP. OCR commonly
   // mistakes the peso sign for "$" or "£" on their receipts.
   const localPaymentProviders = new Set(['gcash', 'maya', 'bdo', 'bpi', 'unionbank', 'seabank', 'gotyme', 'metrobank']);

@@ -66,6 +66,20 @@ test('OCR keeps a PayPal USD charge and its printed peso equivalent separate', (
   assert.equal(result.reference, '89X62941W33447823');
 });
 
+test('OCR extracts the PayPal USD total and PHP card charge from the submitted receipt layout', () => {
+  const result = extractReceiptFields({
+    text: 'Weverse Shop\n-$24.04\nPayment @ Oct 21, 2026 10:37 AM\nDetails\nPaid with\nVISA Debit Card $7,000.00\nGoTyme Bank Physical Card eee e808]\nAmount $111.61\nTotal $111.61\nYour exchange rate: £1.00 = $0.02\nOrder summary\nYou will authorize Weverse Shop to charge your Paypal account based on PayPals default payment method.\n$24.04\nTransaction ID = 264586751356564',
+    confidence: 85,
+  });
+
+  assert.equal(result.provider, 'paypal');
+  assert.equal(result.amount, 111.61);
+  assert.equal(result.amountCurrency, 'USD');
+  assert.equal(result.phpEquivalent, 7000);
+  assert.equal(result.date, '2026-10-21');
+  assert.equal(result.status, 'pending');
+});
+
 test('OCR marks an authorization screen as pending instead of a completed receipt', () => {
   const result = extractReceiptFields({
     text: 'PayPal\nPaid with VISA Debit Card\nYou will authorize Weverse Shop to charge your PayPal account\nTransaction ID: 89X62941W33447823',
