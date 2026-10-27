@@ -804,6 +804,7 @@ async function validate(entity,record,exclude,db=pool){
  if(entity==='UpcomingSchedule'){
   const scheduleDate=dateOnly(record.schedule_date);
   if(!isValidDateKey(scheduleDate))throw httpError('Choose a valid schedule date.',422);
+  if(scheduleDate<getTodayManilaDate())throw httpError('Choose today or a future date for the schedule.',422);
   if(!String(record.title||'').trim())throw httpError('Schedule title is required.',422);
   const previousDate=addDateKeyDays(scheduleDate,-1);
   const statusSlots=ACTIVE_BOOKING_STATUSES.map(()=>'?').join(',');
