@@ -112,15 +112,15 @@ const emailOk = (email) =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || '').trim());
 
 const phoneOk = (phone) =>
-  /^(09\d{9}|639\d{9})$/.test(
-    String(phone || '').replace(/\D/g, '')
-  );
+  /^[+]?[-().\s\d]+$/.test(String(phone || '').trim())
+  && /^(09\d{9}|639\d{9})$/.test(String(phone || '').replace(/\D/g, ''));
 
 const validDateOnly = (value) => {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''));
   if (!match) return false;
 
   const [, year, month, day] = match.map(Number);
+  if (year < 1900) return false;
   const date = new Date(Date.UTC(year, month - 1, day));
   return date.getUTCFullYear() === year
     && date.getUTCMonth() === month - 1
@@ -129,10 +129,13 @@ const validDateOnly = (value) => {
 
 const ageFromDateOnly = (value) => {
   const [year, month, day] = String(value).split('-').map(Number);
-  const today = new Date();
-  let age = today.getUTCFullYear() - year;
-  const birthdayHasPassed = today.getUTCMonth() + 1 > month
-    || (today.getUTCMonth() + 1 === month && today.getUTCDate() >= day);
+  const todayParts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(new Date());
+  const todayValues = Object.fromEntries(todayParts.map(({ type, value: part }) => [type, part]));
+  let age = Number(todayValues.year) - year;
+  const birthdayHasPassed = Number(todayValues.month) > month
+    || (Number(todayValues.month) === month && Number(todayValues.day) >= day);
   if (!birthdayHasPassed) age -= 1;
   return age;
 };
@@ -245,32 +248,8 @@ async function issue(res, user, req) {
 ========================================================= */
 
 function ageFromDate(value) {
-  if (!value) return null;
-
-  const d = new Date(`${value}T00:00:00`);
-
-  if (Number.isNaN(d.getTime())) {
-    return null;
-  }
-
-  const today = new Date();
-
-  let age =
-    today.getFullYear() -
-    d.getFullYear();
-
-  const beforeBirthday =
-    today.getMonth() < d.getMonth() ||
-    (
-      today.getMonth() === d.getMonth() &&
-      today.getDate() < d.getDate()
-    );
-
-  if (beforeBirthday) {
-    age -= 1;
-  }
-
-  return age;
+  if (!validDateOnly(value)) return null;
+  return ageFromDateOnly(value);
 }
 
 /* =========================================================
@@ -491,13 +470,14 @@ router.post('/', async (req, res, next) => {
     if (action === 'request-account-recovery') {
       const oldEmail = String(p.old_email || '').trim().toLowerCase();
       const requestedEmail = String(p.requested_email || '').trim().toLowerCase();
-      const fullName = String(p.full_name || '').trim().slice(0, 191);
-      const phone = String(p.phone || '').trim().slice(0, 32);
-      const bookingReference = String(p.booking_reference || '').trim().slice(0, 64);
-      const reason = String(p.reason || '').trim().slice(0, 1000);
+      const fullName = String(p.full_name || '').trim();
+      const phone = String(p.phone || '').trim();
+      const bookingReference = String(p.booking_reference || '').trim();
+      const reason = String(p.reason || '').trim();
       if (oldEmail.length > 191 || requestedEmail.length > 191
         || !emailOk(oldEmail) || !emailOk(requestedEmail) || oldEmail === requestedEmail
-        || !fullName || !phone || !phoneOk(phone)) {
+        || !fullName || fullName.length > 191 || !phone || phone.length > 32 || !phoneOk(phone)
+        || bookingReference.length > 64 || reason.length > 1000) {
         return res.status(422).json({ error: 'Enter the old and new email addresses, your full name, and a valid phone number. The new email must be different.' });
       }
 
@@ -581,10 +561,11 @@ router.post('/', async (req, res, next) => {
       }
       const requestId = String(p.request_id || '').trim();
       const decision = String(p.decision || '').trim().toLowerCase();
-      const reviewNote = String(p.review_note || '').trim().slice(0, 1000);
+      const reviewNote = String(p.review_note || '').trim();
       if (!requestId || !['approve', 'decline'].includes(decision)) {
         return res.status(422).json({ error: 'Choose a valid account recovery request and decision.' });
       }
+      if (reviewNote.length > 1000) return res.status(422).json({ error: 'Review notes must be 1,000 characters or fewer.' });
       if (decision === 'approve' && p.identity_verified !== true) {
         return res.status(422).json({ error: 'Confirm that the person was verified using contact information already on file before approving recovery.' });
       }
@@ -738,13 +719,14 @@ router.post('/', async (req, res, next) => {
         return res.status(403).json({ error: 'Only a super admin can create another super admin account.' });
       }
 
-      const fullName = String(p.full_name || '').trim().slice(0, 191);
+      const fullName = String(p.full_name || '').trim();
       const email = String(p.email || '').trim().toLowerCase();
       const phone = String(p.phone || '').trim();
       const password = String(p.password || '');
       if (!fullName || !email || !phone || !password) {
         return res.status(422).json({ error: 'Name, email, phone number, and a password are required.' });
       }
+      if (fullName.length > 191) return res.status(422).json({ error: 'Name must be 191 characters or fewer.' });
       if (email.length > 191) return res.status(422).json({ error: 'Email address must be 191 characters or fewer.' });
       if (!emailOk(email)) return res.status(422).json({ error: 'Please enter a valid email address.' });
       if (!phoneOk(phone)) return res.status(422).json({ error: 'Please enter a valid Philippine mobile number.' });
@@ -1178,6 +1160,9 @@ router.post('/', async (req, res, next) => {
                 .join(' ') ||
               email.split('@')[0]
           ).trim();
+        if (!fullName || fullName.length > 191) {
+          return res.status(422).json({ error: 'Google account name must be 191 characters or fewer.' });
+        }
 
         let profileImageUrl = String(p.profile_image_url || '').trim() || null;
         if (profileImageUrl && (
@@ -1365,10 +1350,21 @@ router.post('/', async (req, res, next) => {
         });
       }
 
+      if (fullName.length > 120) {
+        return res.status(422).json({ error: 'Full name must be 120 characters or fewer.' });
+      }
+      if (email.length > 191) {
+        return res.status(422).json({ error: 'Email address must be 191 characters or fewer.' });
+      }
+
       if (!emailOk(email)) {
         return res.status(422).json({
           error: 'Please enter a valid email address.'
         });
+      }
+
+      if (!validDateOnly(birthDate)) {
+        return res.status(422).json({ error: 'Please enter a valid birthday.' });
       }
 
       const age = ageFromDate(birthDate);

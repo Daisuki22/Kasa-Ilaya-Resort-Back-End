@@ -15,7 +15,7 @@ const {ACTIVE_BOOKING_STATUSES,addDateKeyDays,calendarDaysUntil,dateKeyFromDate,
 const BOOKING_SCHEDULE_LOCK='kasa_ilaya_booking_schedule';
 const MAP={
  ActivityLog:{table:'activity_logs',fields:['id','created_date','updated_date','user_email','user_name','actor_role','action','entity_type','entity_id','details']},
- Booking:{table:'bookings',fields:['id','created_date','updated_date','booking_reference','package_id','package_name','tour_type','booking_date','guest_count','included_guest_count','customer_user_id','customer_name','customer_email','customer_phone','special_requests','total_amount','reservation_fee_amount','payment_type','payment_amount_due','payment_mode','payment_number','payment_reference_number','payment_qr_code_id','payment_qr_code_label','receipt_url','payment_proof_review','payment_proof_fingerprint','payment_proof_ocr_provider','payment_proof_ocr_amount','payment_proof_ocr_reference','payment_proof_ocr_date','payment_proof_ocr_confidence','terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','status','approved_by','approved_at','rejected_by','rejected_at','rejection_reason','payment_status','additional_fee_amount','additional_fee_reason','additional_fee_items','additional_fee_status','additional_fee_paid_at','additional_fee_paid_by','rebooking_status','rebooking_original_date','rebooking_requested_date','rebooking_requested_package_id','rebooking_requested_package_name','rebooking_requested_total_amount','rebooking_additional_payment_amount','rebooking_additional_payment_paid_at','rebooking_additional_payment_paid_by','rebooking_reason','rebooking_requested_at','rebooking_resolved_at','rebooking_resolution_note','rebooking_count'],json:['additional_fee_items'],numeric:['included_guest_count','rebooking_requested_total_amount','rebooking_additional_payment_amount']},
+ Booking:{table:'bookings',fields:['id','created_date','updated_date','booking_reference','package_id','package_name','tour_type','booking_date','guest_count','included_guest_count','customer_user_id','customer_name','customer_email','customer_phone','special_requests','total_amount','reservation_fee_amount','payment_type','payment_amount_due','payment_mode','payment_number','payment_reference_number','payment_qr_code_id','payment_qr_code_label','receipt_url','payment_proof_review','payment_proof_fingerprint','payment_proof_ocr_provider','payment_proof_ocr_amount','payment_proof_ocr_reference','payment_proof_ocr_date','payment_proof_ocr_confidence','terms_document_id','terms_version','terms_accepted','privacy_document_id','privacy_version','privacy_acknowledged','privacy_consent','legal_accepted_at','status','approved_by','approved_at','rejected_by','rejected_at','rejection_reason','payment_status','additional_fee_amount','additional_fee_reason','additional_fee_items','additional_fee_status','additional_fee_paid_at','additional_fee_paid_by','rebooking_status','rebooking_original_date','rebooking_requested_date','rebooking_requested_package_id','rebooking_requested_package_name','rebooking_requested_total_amount','rebooking_additional_payment_amount','rebooking_additional_payment_paid_at','rebooking_additional_payment_paid_by','rebooking_reason','rebooking_requested_at','rebooking_resolved_at','rebooking_resolution_note','rebooking_count'],json:['additional_fee_items'],bool:['terms_accepted','privacy_acknowledged','privacy_consent'],numeric:['guest_count','included_guest_count','total_amount','reservation_fee_amount','payment_amount_due','payment_proof_ocr_amount','payment_proof_ocr_confidence','additional_fee_amount','rebooking_requested_total_amount','rebooking_additional_payment_amount','rebooking_count']},
  FoundItem:{table:'found_items',fields:['id','created_date','updated_date','item_name','description','date_found','location_found','found_by','status','image_url','claimed_guest_name','claimed_contact','claimed_reservation_id','proof_of_ownership','released_by','date_claimed','is_active']},
  LostItemReport:{table:'lost_item_reports',fields:['id','created_date','updated_date','guest_name','reservation_number','item_lost','description','date_lost','contact_number','email','status','matched_item_id']},
  Package:{table:'packages',fields:['id','created_date','updated_date','name','description','tour_type','price','day_tour_price','night_tour_price','twenty_two_hour_price','max_guests','inclusions','gallery_images','image_url','is_active'],json:['inclusions','gallery_images'],bool:['is_active'],numeric:['price','day_tour_price','night_tour_price','twenty_two_hour_price','max_guests']},
@@ -800,45 +800,204 @@ async function bookingAction(req,res,next){
  }catch(error){return next(error);}
 }
 async function bookingCreationLock(req,res,next){const entity=String(req.query.entity||'');const bookingCreate=req.method==='POST'&&entity==='Booking';const manualScheduleWrite=entity==='UpcomingSchedule'&&(req.method==='POST'||(['PATCH','PUT'].includes(req.method)&&Object.prototype.hasOwnProperty.call(req.body||{},'schedule_date')));if((!bookingCreate&&!manualScheduleWrite)||!req.user)return next();let connection;let acquired=false;let released=false;const release=async()=>{if(released||!connection)return;released=true;if(acquired)await releaseNamedLock(connection);connection.release();};try{connection=await pool.getConnection();const [rows]=await connection.query('SELECT GET_LOCK(?,10) AS acquired',[BOOKING_SCHEDULE_LOCK]);acquired=Number(rows[0]?.acquired)===1;if(!acquired){connection.release();console.warn('Booking schedule lock unavailable',{requestId:req.requestId,method:req.method,path:req.path,stage:'acquire_schedule_lock'});return res.status(503).json({error:'Schedule is busy. Please try again.',request_id:req.requestId});}res.once('finish',release);res.once('close',release);return next();}catch(error){if(connection&&!acquired)connection.release();return next(error);}}
-async function validate(entity,record,exclude,db=pool){
+function validationError(message){throw httpError(message,422);}
+function hasAtMostTwoDecimals(value){const scaled=Number(value)*100;return Number.isFinite(scaled)&&Math.abs(scaled-Math.round(scaled))<1e-7;}
+function validateText(record,field,label,{required=false,max=10000,nullable=true}={}){
+ const value=record[field];
+ if(value===undefined)return;
+ if(value===null){if(required||!nullable)validationError(`${label} is required.`);return;}
+ if(typeof value!=='string')validationError(`${label} must be text.`);
+ const trimmed=value.trim();
+ if(required&&!trimmed)validationError(`${label} is required.`);
+ if(trimmed.length>max)validationError(`${label} must be ${max} characters or fewer.`);
+ record[field]=trimmed||(!required&&nullable?null:'');
+}
+function validateEntityTypes(cfg,record){
+ for(const field of cfg.numeric||[]){
+  const value=record[field];
+  if(value===undefined||value===null)continue;
+  if(typeof value==='string'&&!value.trim())validationError(`${field.replace(/_/g,' ')} must be a number.`);
+  const number=Number(value);
+  if(!Number.isFinite(number))validationError(`${field.replace(/_/g,' ')} must be a valid number.`);
+  record[field]=number;
+ }
+ for(const field of cfg.bool||[]){
+  const value=record[field];
+  if(value===undefined||value===null)continue;
+  if([true,1,'1','true'].includes(value)){record[field]=true;continue;}
+  if([false,0,'0','false'].includes(value)){record[field]=false;continue;}
+  validationError(`${field.replace(/_/g,' ')} must be true or false.`);
+ }
+ for(const field of cfg.json||[]){
+  const value=record[field];
+  if(value===undefined||value===null)continue;
+  if(typeof value==='string'){
+   try{record[field]=JSON.parse(value);}catch{validationError(`${field.replace(/_/g,' ')} must contain valid structured data.`);}
+  }
+ }
+}
+function isSafeAssetUrl(value){
+ const url=String(value||'').trim();
+ return !url||url.startsWith('/uploads/')||url.startsWith('/img/')||url.startsWith('img/')
+  ||/^https?:\/\/[^\s<>"']+$/i.test(url)
+  ||/^data:image\/(?:png|jpe?g|webp);base64,[a-z0-9+/=]+$/i.test(url);
+}
+async function validate(entity,record,exclude,db=pool,changedFields=null){
+ const cfg=MAP[entity];
+ if(cfg)validateEntityTypes(cfg,record);
  if(entity==='UpcomingSchedule'){
   const scheduleDate=dateOnly(record.schedule_date);
   if(!isValidDateKey(scheduleDate))throw httpError('Choose a valid schedule date.',422);
-  if(scheduleDate<getTodayManilaDate())throw httpError('Choose today or a future date for the schedule.',422);
-  if(!String(record.title||'').trim())throw httpError('Schedule title is required.',422);
-  const previousDate=addDateKeyDays(scheduleDate,-1);
-  const statusSlots=ACTIVE_BOOKING_STATUSES.map(()=>'?').join(',');
-  const [bookings]=await db.query(`SELECT id FROM bookings WHERE status IN (${statusSlots}) AND (booking_date=? OR (tour_type IN ('night_tour','22_hours') AND booking_date=?)) LIMIT 1`,[...ACTIVE_BOOKING_STATUSES,scheduleDate,previousDate]);
-  if(bookings.length)throw httpError('A booking already occupies this date. Choose another date for the schedule.',409,'BOOKING_SCHEDULE_UNAVAILABLE');
-  const [schedules]=await db.query('SELECT id FROM upcoming_schedules WHERE schedule_date=? AND id<>? LIMIT 1',[scheduleDate,exclude||'']);
-  if(schedules.length)throw httpError('A schedule already exists on this date. Choose another date.',409,'BOOKING_SCHEDULE_UNAVAILABLE');
+  if((!exclude||changedFields?.has('schedule_date'))&&scheduleDate<getTodayManilaDate())throw httpError('Choose today or a future date for the schedule.',422);
+  validateText(record,'title','Schedule title',{required:true,max:191});
+  validateText(record,'location','Schedule location',{max:191});
+  validateText(record,'description','Schedule description',{max:10000});
+  validateText(record,'created_by_name','Creator name',{max:191});
+  validateText(record,'created_by_email','Creator email',{max:191});
+  if(record.created_by_email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(record.created_by_email))validationError('Enter a valid creator email address.');
+  for(const field of ['start_time','end_time'])if(record[field]!==undefined&&record[field]!==null&&record[field]!==''&&!/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(String(record[field])))validationError('Schedule times must use 24-hour HH:MM format.');
+  if(record.start_time&&record.end_time&&record.start_time===record.end_time)validationError('Schedule end time must differ from its start time.');
+  if(!exclude||changedFields?.has('schedule_date')){
+   const previousDate=addDateKeyDays(scheduleDate,-1);
+   const statusSlots=ACTIVE_BOOKING_STATUSES.map(()=>'?').join(',');
+   const [bookings]=await db.query(`SELECT id FROM bookings WHERE status IN (${statusSlots}) AND (booking_date=? OR (tour_type IN ('night_tour','22_hours') AND booking_date=?)) LIMIT 1`,[...ACTIVE_BOOKING_STATUSES,scheduleDate,previousDate]);
+   if(bookings.length)throw httpError('A booking already occupies this date. Choose another date for the schedule.',409,'BOOKING_SCHEDULE_UNAVAILABLE');
+   const [schedules]=await db.query('SELECT id FROM upcoming_schedules WHERE schedule_date=? AND id<>? LIMIT 1',[scheduleDate,exclude||'']);
+   if(schedules.length)throw httpError('A schedule already exists on this date. Choose another date.',409,'BOOKING_SCHEDULE_UNAVAILABLE');
+  }
  }
  if(entity==='Package'){
-  if(!String(record.name||'').trim())throw Object.assign(new Error('Package name is required.'),{status:422});
-  const prices=['day_tour_price','night_tour_price','twenty_two_hour_price','price'].map(x=>Number(record[x]||0));
+  validateText(record,'name','Package name',{required:true,max:191});
+  validateText(record,'description','Package description',{max:10000});
+  if(!['day_tour','night_tour','22_hours'].includes(record.tour_type))validationError('Choose a valid package tour type.');
+  const priceFields=['day_tour_price','night_tour_price','twenty_two_hour_price','price'];
+  for(const field of priceFields){const value=record[field]??0;if(!Number.isFinite(Number(value))||Number(value)<0||Number(value)>99999999.99||!hasAtMostTwoDecimals(value))validationError('Package prices must be valid PHP amounts with no more than two decimal places.');record[field]=Number(value);}
+  const prices=priceFields.map(x=>Number(record[x]||0));
   if(Math.max(...prices)<=0)throw Object.assign(new Error('Please add at least one package price.'),{status:422});
+  if(!Number.isInteger(Number(record.max_guests))||Number(record.max_guests)<1||Number(record.max_guests)>1000)validationError('Included guest count must be a whole number from 1 to 1,000.');
+  record.max_guests=Number(record.max_guests);
+  if(!Array.isArray(record.inclusions)||record.inclusions.some(item=>typeof item!=='string'||!item.trim()||item.trim().length>191))validationError('Package inclusions must be a list of non-empty items up to 191 characters each.');
+  record.inclusions=record.inclusions.map(item=>item.trim());
+  if(!Array.isArray(record.gallery_images)||record.gallery_images.some(url=>typeof url!=='string'||url.length>5000000||!isSafeAssetUrl(url)))validationError('Package gallery images must be valid image URLs.');
+  record.gallery_images=record.gallery_images.map(url=>url.trim());
+  if(record.gallery_images.length>30)validationError('A package can include up to 30 gallery images.');
+  if(record.image_url&&!isSafeAssetUrl(record.image_url))validationError('Choose a valid package cover image.');
+  if(record.is_active!==undefined&&typeof record.is_active!=='boolean')validationError('Package status must be true or false.');
   if(record.is_active!==false){const [r]=await pool.query('SELECT id FROM packages WHERE LOWER(TRIM(name))=LOWER(TRIM(?)) AND is_active=1 AND id<>? LIMIT 1',[record.name,exclude||'']);if(r[0])throw Object.assign(new Error('An active package with this name already exists.'),{status:409});}
  }
  if(entity==='Booking'){
   if(!exclude)await applyBookingPricing(record,db);
+  const moneyFields=['total_amount','reservation_fee_amount','payment_amount_due','payment_proof_ocr_amount','additional_fee_amount','rebooking_additional_payment_amount'];
+  for(const field of moneyFields)if(record[field]!==undefined&&record[field]!==null&&(record[field]<0||record[field]>99999999.99||!hasAtMostTwoDecimals(record[field])))validationError(`${field.replace(/_/g,' ')} must be a non-negative PHP amount with up to two decimal places.`);
+  if(record.rebooking_requested_total_amount!==undefined&&record.rebooking_requested_total_amount!==null&&(record.rebooking_requested_total_amount<0||record.rebooking_requested_total_amount>9999999999.99||!hasAtMostTwoDecimals(record.rebooking_requested_total_amount)))validationError('Rebooking total must be a valid PHP amount.');
+  if(record.payment_proof_ocr_confidence!==undefined&&record.payment_proof_ocr_confidence!==null&&(record.payment_proof_ocr_confidence<0||record.payment_proof_ocr_confidence>100))validationError('Receipt confidence must be from 0 to 100.');
+  if(record.included_guest_count!==undefined&&record.included_guest_count!==null&&(!Number.isSafeInteger(record.included_guest_count)||record.included_guest_count<0||record.included_guest_count>1000))validationError('Included guest count must be a whole number from 0 to 1,000.');
+  if(record.rebooking_count!==undefined&&record.rebooking_count!==null&&(!Number.isSafeInteger(record.rebooking_count)||record.rebooking_count<0))validationError('Rebooking count must be a non-negative whole number.');
+  for(const [field,max] of Object.entries({booking_reference:64,package_id:64,package_name:191,payment_type:32,payment_mode:191,payment_number:64,payment_reference_number:128,payment_qr_code_id:64,payment_qr_code_label:191,payment_proof_review:32,payment_proof_ocr_provider:32,payment_proof_ocr_reference:128,terms_document_id:64,terms_version:32,privacy_document_id:64,privacy_version:32,rebooking_requested_package_id:64,rebooking_requested_package_name:191}))validateText(record,field,field.replace(/_/g,' '),{max});
+  for(const [field,values] of Object.entries({status:['pending','confirmed','cancelled','completed','archived','rejected'],payment_status:['unpaid','pending_verification','paid','declined'],additional_fee_status:['pending','unpaid','paid'],rebooking_status:['none','pending','approved','declined']}))if(record[field]!==undefined&&!values.includes(record[field]))validationError(`Choose a valid ${field.replace(/_/g,' ')}.`);
+  validateText(record,'rejection_reason','Rejection reason',{max:10000});
+  validateText(record,'additional_fee_reason','Additional fee reason',{max:10000});
+  validateText(record,'rebooking_reason','Rebooking reason',{max:10000});
+  validateText(record,'rebooking_resolution_note','Rebooking resolution note',{max:10000});
   const date=dateOnly(record.booking_date);
   if(!isValidDateKey(date)||!getTourTime(record.tour_type))throw Object.assign(new Error('Booking date and tour type must be valid.'),{status:422});
-  if(date<dateKeyFromDate(new Date()))throw Object.assign(new Error('Choose today or a future booking date.'),{status:422});
-  if(isTourStartTimePassed(date,record.tour_type))throw httpError(`The ${getTourTime(record.tour_type).label} tour has already started for today. Choose another tour or date.`,409,'BOOKING_TOUR_ALREADY_STARTED');
-  const guests=Number(record.guest_count||0);
-  if(guests<1)throw Object.assign(new Error('Guest count must be at least 1.'),{status:422});
+  const dateChanged=!exclude||changedFields?.has('booking_date')||changedFields?.has('tour_type');
+  if(dateChanged&&date<getTodayManilaDate())throw Object.assign(new Error('Choose today or a future booking date.'),{status:422});
+  if(dateChanged&&isTourStartTimePassed(date,record.tour_type))throw httpError(`The ${getTourTime(record.tour_type).label} tour has already started for today. Choose another tour or date.`,409,'BOOKING_TOUR_ALREADY_STARTED');
+  if(!exclude||changedFields?.has('guest_count')){const guests=Number(record.guest_count||0);if(!Number.isSafeInteger(guests)||guests<1||guests>1000)validationError('Guest count must be a whole number from 1 to 1,000.');}
+  if(!exclude||changedFields?.has('customer_name'))validateText(record,'customer_name','Guest name',{required:true,max:191});
+  if(!exclude||changedFields?.has('customer_email')){validateText(record,'customer_email','Guest email',{required:true,max:191});if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(record.customer_email))validationError('Enter a valid guest email address.');record.customer_email=record.customer_email.toLowerCase();}
+  if(!exclude||changedFields?.has('customer_phone')){validateText(record,'customer_phone','Guest phone number',{required:true,max:64});const phoneDigits=record.customer_phone.replace(/\D/g,'');if(!/^[+]?[-().\s\d]+$/.test(record.customer_phone)||!/^(09\d{9}|639\d{9})$/.test(phoneDigits))validationError('Enter a valid Philippine mobile number.');}
+  if(!exclude||changedFields?.has('special_requests'))validateText(record,'special_requests','Special requests',{max:5000});
   if(!exclude&&!await databaseScheduleIsAvailable(db,date,record.tour_type,null,db!==pool))throw httpError('The selected schedule is unavailable. Please choose another date or time.',409,'BOOKING_SCHEDULE_UNAVAILABLE');
  }
  if(entity==='LegalDocument'){
   if(!['terms','privacy'].includes(record.document_type))throw httpError('Choose Terms & Conditions or Privacy Notice.',422);
-  if(!String(record.title||'').trim())throw httpError('A legal document title is required.',422);
-  if(!String(record.content||'').trim())throw httpError('Legal document content is required.',422);
-  if(String(record.content).length>100000)throw httpError('Legal document content must be 100,000 characters or fewer.',422);
+  validateText(record,'title','Document title',{required:true,max:191});
+  validateText(record,'content','Document content',{required:true,max:100000,nullable:false});
   if(!/^\d{1,4}(?:\.\d{1,4}){0,2}$/.test(String(record.version||'')))throw httpError('Use a version such as 1.0 or 1.1.',422);
+  validateText(record,'version','Document version',{required:true,max:32,nullable:false});
+  if(record.status!==undefined&&!['draft','published','archived'].includes(record.status))validationError('Choose a valid document status.');
   const [duplicates]=await db.query('SELECT id FROM legal_documents WHERE document_type=? AND version=? AND id<>? LIMIT 1',[record.document_type,record.version,exclude||'']);
   if(duplicates[0])throw httpError('That version already exists. Choose a new version number.',409);
  }
- if(entity==='Review'){const rating=Number(record.rating||0);if(rating<1||rating>5)throw Object.assign(new Error('Rating must be between 1 and 5.'),{status:422});}
+ if(entity==='PaymentQrCode'){
+  validateText(record,'label','Payment method name',{required:true,max:191});
+  validateText(record,'account_name','Account name',{max:191});
+  validateText(record,'account_number','Account number',{max:191});
+  validateText(record,'instructions','Payment instructions',{max:10000});
+  if(typeof record.image_url!=='string'||!record.image_url.trim()||record.image_url.length>5000000||!isSafeAssetUrl(record.image_url))validationError('Choose a valid QR image.');
+  if(!Number.isInteger(Number(record.display_order))||Number(record.display_order)<1||Number(record.display_order)>2147483647)validationError('Display order must be a positive whole number.');
+  record.display_order=Number(record.display_order);
+ }
+ if(entity==='ResortRule'){
+  validateText(record,'title','Rule title',{required:true,max:191});
+  validateText(record,'description','Rule description',{required:true,max:10000});
+  if(!Number.isInteger(Number(record.sort_order))||Number(record.sort_order)<1||Number(record.sort_order)>2147483647)validationError('Rule order must be a positive whole number.');
+  record.sort_order=Number(record.sort_order);
+ }
+ if(entity==='Review'){
+  const rating=Number(record.rating);
+  if(!Number.isInteger(rating)||rating<1||rating>5)validationError('Rating must be a whole number from 1 to 5.');
+  record.rating=rating;
+  validateText(record,'review_text','Review',{required:true,max:5000,nullable:false});
+  validateText(record,'guest_name','Guest name',{required:true,max:191});
+  validateText(record,'guest_email','Guest email',{max:191});
+  validateText(record,'package_name','Package name',{max:191});
+  if(record.guest_email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(record.guest_email))validationError('Enter a valid guest email address.');
+ }
+ if(entity==='FoundItem'){
+  validateText(record,'item_name','Item name',{required:true,max:191});
+  validateText(record,'description','Item description',{max:10000});
+  validateText(record,'location_found','Found location',{max:191});
+  validateText(record,'found_by','Finder name',{max:191});
+  const foundDate=dateOnly(record.date_found);
+  if(!isValidDateKey(foundDate)||foundDate>getTodayManilaDate())validationError('Choose a valid date found that is not in the future.');
+  if(!['unclaimed','claimed'].includes(record.status))validationError('Choose a valid found-item status.');
+  if(record.image_url&&!isSafeAssetUrl(record.image_url))validationError('Choose a valid item image.');
+  validateText(record,'proof_of_ownership','Ownership proof',{max:10000});
+  const claimFields=['status','claimed_guest_name','claimed_contact','released_by','date_claimed'];
+  const validateClaim=record.status==='claimed'&&(!exclude||claimFields.some(field=>changedFields?.has(field)));
+  if(validateClaim){
+   validateText(record,'claimed_guest_name','Claimant name',{required:true,max:191});
+   validateText(record,'claimed_contact','Claimant contact',{required:true,max:191});
+   validateText(record,'released_by','Released by',{required:true,max:191});
+   const claimDate=dateOnly(record.date_claimed);
+   if(!isValidDateKey(claimDate)||claimDate<foundDate||claimDate>getTodayManilaDate())validationError('Claim date must be on or after the found date and cannot be in the future.');
+  }
+ }
+ if(entity==='LostItemReport'){
+  validateText(record,'guest_name','Guest name',{required:true,max:191});
+  validateText(record,'reservation_number','Reservation number',{max:64});
+  validateText(record,'item_lost','Lost item',{required:true,max:191});
+  validateText(record,'description','Item description',{max:10000});
+  const lostDate=dateOnly(record.date_lost);
+  if(!isValidDateKey(lostDate)||lostDate>getTodayManilaDate())validationError('Choose a valid date the item was lost that is not in the future.');
+  validateText(record,'contact_number','Contact number',{max:64});
+  validateText(record,'email','Email address',{max:191});
+  if(record.email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(record.email))validationError('Enter a valid email address.');
+  if(!['searching','matched','claimed'].includes(record.status))validationError('Choose a valid lost-item report status.');
+ }
+ if(entity==='SiteSetting'){
+  validateText(record,'site_name','Website name',{required:true,max:191});
+  const textLimits={body_font_style:64,heading_font_style:64,hero_badge_text:191,hero_title_line1:191,hero_title_line2:191,amenities_section_label:191,amenities_section_title:191,terms_title:191,hero_description:10000,amenities_section_description:10000,terms_summary:10000,terms_content:100000};
+  for(const [field,max] of Object.entries(textLimits))validateText(record,field,field.replace(/_/g,' '),{max});
+  for(const field of ['logo_url','hero_image_url','packages_banner_url'])if(record[field]&&!isSafeAssetUrl(record[field]))validationError(`Enter a valid ${field.replace(/_/g,' ')} image URL.`);
+  for(const field of ['logo_url','hero_image_url','packages_banner_url'])if(record[field]&&record[field].length>5000000)validationError(`${field.replace(/_/g,' ')} is too large.`);
+  for(const field of ['min_password_length','session_timeout_minutes','max_login_attempts','lockout_minutes']){
+   if(record[field]===undefined||record[field]===null)continue;
+   const value=Number(record[field]);
+   const limits={min_password_length:[8,32],session_timeout_minutes:[10,1440],max_login_attempts:[1,20],lockout_minutes:[1,240]}[field];
+   if(!Number.isInteger(value)||value<limits[0]||value>limits[1])validationError(`${field.replace(/_/g,' ')} must be a whole number from ${limits[0]} to ${limits[1]}.`);
+   record[field]=value;
+  }
+  const arrays=['hero_images_json','packages_banner_images_json','resort_gallery_json','amenities_json'];
+  for(const field of arrays){if(record[field]===undefined||record[field]===null)continue;if(!Array.isArray(record[field]))validationError(`${field.replace(/_/g,' ')} must be a list.`);if(record[field].length>50)validationError(`${field.replace(/_/g,' ')} can contain up to 50 items.`);}
+  for(const field of ['hero_images_json','packages_banner_images_json'])if((record[field]||[]).some(url=>typeof url!=='string'||url.length>5000000||!isSafeAssetUrl(url)))validationError(`${field.replace(/_/g,' ')} contains an invalid image URL.`);
+  for(const field of ['resort_gallery_json','amenities_json'])if((record[field]||[]).some(item=>!item||typeof item!=='object'||Array.isArray(item)||Object.values(item).some(value=>typeof value!=='string')))validationError(`${field.replace(/_/g,' ')} must contain valid items.`);
+  for(const item of record.resort_gallery_json||[]){if(typeof item.src!=='string'||!item.src.trim()||item.src.length>5000000||!isSafeAssetUrl(item.src))validationError('Each gallery item needs a valid image URL.');if(typeof item.title!=='string'||item.title.length>191||typeof item.subtitle!=='string'||item.subtitle.length>1000)validationError('Gallery titles must be 191 characters or fewer and subtitles 1,000 characters or fewer.');}
+  for(const item of record.amenities_json||[]){if(typeof item.title!=='string'||!item.title.trim()||item.title.length>191||typeof item.desc!=='string'||item.desc.length>1000||typeof item.icon!=='string'||!item.icon.trim()||item.icon.length>64)validationError('Each amenity needs a title, a valid icon name, and concise description.');}
+ }
 }
 function blockPublicBookingEmailFilter(req,res,next){
  if(req.method!=='GET'||String(req.query.entity||'')!=='Booking'||req.user||!req.query.filter)return next();
@@ -934,7 +1093,7 @@ async function enforceBookingNotice(req,res,next){try{const entity=String(req.qu
 async function handler(req,res,next){try{const entity=String(req.query.entity||'');const cfg=MAP[entity];if(!cfg)return res.status(404).json({error:`Unsupported entity: ${entity}`});const table=cfg.table;const fields=cfg.fields;const method=req.method;const admin=isAdmin(req.user);if(entity==='User'&&!admin)return res.status(403).json({error:'Forbidden.'});if(entity==='User'&&method==='POST')return res.status(403).json({error:'Use the administrator account creation flow.'});if(entity==='LostItemReport'&&!admin)return res.status(403).json({error:'Forbidden.'});if(entity==='ActivityLog'&&method!=='GET'&&!admin)return res.status(403).json({error:'Forbidden.'});if(entity==='User'&&!isSuperAdminUser(req.user)&&!['GET','PATCH','PUT'].includes(method))return res.status(403).json({error:'Forbidden.'});if(!admin&&['Booking','PaymentQrCode','SiteSetting'].includes(entity)&&method!=='GET')return res.status(403).json({error:'Forbidden.'});if(!admin&&entity==='Review'&&method!=='GET'&&method!=='POST')return res.status(403).json({error:'Forbidden.'});if(!admin&&['Package','ResortRule','UpcomingSchedule','FoundItem'].includes(entity)&&!['GET','POST'].includes(method))return res.status(403).json({error:'Forbidden.'});if(entity==='PaymentQrCode'&&admin&&['POST','PATCH','PUT'].includes(method))await ensurePaymentQrCodeImageCapacity();
 if(method==='GET'){if(entity==='ActivityLog')return await listActivityLogs(req,res);if(entity==='Booking')await synchronizeBookingStatuses();const where=[],vals=[];if(entity==='Notification'){if(!req.user)return res.status(401).json({error:'Not authenticated.'});where.push('LOWER(user_email)=LOWER(?)');vals.push(req.user.email);}let filter={};try{filter=req.query.filter?JSON.parse(req.query.filter):{};}catch{}if(entity==='User'&&!isSuperAdminUser(req.user)){where.push('(role NOT IN (?,?) AND (app_role IS NULL OR app_role NOT IN (?,?)))');vals.push('admin','super_admin','admin','super_admin');if(filter.disabled===undefined)where.push('disabled=0');}for(const [f,v] of Object.entries(filter)){if(!fields.includes(f))continue;if(Array.isArray(v)&&v.length){where.push(`\`${f}\` IN (${v.map(()=>'?').join(',')})`);vals.push(...v.map(x=>serialize(cfg,f,x)));}else{where.push(`\`${f}\`=?`);vals.push(serialize(cfg,f,v));}}if(!admin&&['Package','PaymentQrCode','ResortRule','FoundItem'].includes(entity)){where.push('is_active=1');}if(!admin&&entity==='Review'){where.push('is_approved=1');}if(entity==='Booking'&&!admin&&req.user){where.push('LOWER(customer_email)=LOWER(?)');vals.push(req.user.email);}if(entity==='Booking'&&!req.user&&!filter.customer_email){where.push("status IN ('pending','confirmed','completed')");}let sql=`SELECT * FROM \`${table}\``;if(where.length)sql+=' WHERE '+where.join(' AND ');const sort=String(req.query.sort||'');if(sort){const desc=sort.startsWith('-'),sf=desc?sort.slice(1):sort;if(fields.includes(sf))sql+=` ORDER BY \`${sf}\` ${desc?'DESC':'ASC'}`;}if(/^\d+$/.test(String(req.query.limit||'')))sql+=` LIMIT ${Math.min(500,Number(req.query.limit))} OFFSET ${Math.max(0,/^\d+$/.test(String(req.query.offset||''))?Number(req.query.offset):0)}`;const [rows]=await pool.query(sql,vals);return res.json(rows.map(r=>{const item=deserialize(cfg,r);if(entity==='Booking'&&!admin&&(!req.user||String(item.customer_email||'').toLowerCase()!==String(req.user.email||'').toLowerCase()))return {id:item.id,package_id:item.package_id,package_name:item.package_name,tour_type:item.tour_type,booking_date:item.booking_date,guest_count:item.guest_count,status:item.status};return item;}));}
 if(method==='POST'){if(!admin&&!['ActivityLog','Booking','Review'].includes(entity)&&!(entity==='FoundItem'&&req.user))return res.status(403).json({error:'Forbidden.'});if(!req.user&&['ActivityLog','Booking','Review','FoundItem'].includes(entity))return res.status(401).json({error:'Not authenticated.'});const p=req.body||{},n=now(),record={};for(const f of fields)if(Object.prototype.hasOwnProperty.call(p,f))record[f]=p[f];record.id=record.id||id(entity.toLowerCase());record.created_date=record.created_date||n;record.updated_date=n;if(entity==='ActivityLog'){record.user_email=req.user.email;record.user_name=req.user.full_name;record.actor_role=getActorRole(req.user);}if(entity==='Booking'){record.customer_email=req.user.email;record.booking_reference=record.booking_reference||`KI-${cryptoRandom(4)}`;record.status='pending';record.payment_status=record.receipt_url?'pending_verification':'unpaid';record.payment_proof_review=record.receipt_url?'needs_manual_review':null;record.payment_proof_fingerprint=null;if(record.receipt_url){const proofPath=uploadedReceiptPath(record.receipt_url);if(proofPath){record.payment_proof_fingerprint=createHash('sha256').update(fs.readFileSync(proofPath)).digest('hex');const [duplicates]=await pool.query('SELECT id FROM bookings WHERE payment_proof_fingerprint=? LIMIT 1',[record.payment_proof_fingerprint]);if(duplicates.length)record.payment_proof_review='duplicate_needs_review';}}}if(entity==='Review'&&!admin){const [bookings]=await pool.query('SELECT id,booking_reference,package_name,customer_name,customer_email,status FROM bookings WHERE id=? LIMIT 1',[record.booking_id]);const booking=bookings[0];if(!booking||String(booking.customer_email).toLowerCase()!==String(req.user.email).toLowerCase()||booking.status!=='completed')return res.status(403).json({error:'A review can only be submitted for your completed booking.'});Object.assign(record,{booking_reference:booking.booking_reference,package_name:booking.package_name,guest_name:booking.customer_name,guest_email:booking.customer_email});}if(entity==='FoundItem'&&!admin){delete record.is_active;delete record.status;record.found_by=req.user.full_name||req.user.email;record.status='unclaimed';record.is_active=false;}if(entity==='Package'){record.is_active=record.is_active!==false;record.price=Number(record.price||0);record.max_guests=Number(record.max_guests||1);}if(entity==='FoundItem'&&admin)record.status=record.status||'unclaimed';if(entity==='LostItemReport')record.status=record.status||'searching';await validate(entity,record);if(entity==='Booking')await validateBookingSubmission(record);const cols=[],qs=[],vals=[];for(const f of fields)if(Object.prototype.hasOwnProperty.call(record,f)){cols.push(`\`${f}\``);qs.push('?');vals.push(serialize(cfg,f,record[f]));}await pool.query(`INSERT INTO \`${table}\` (${cols.join(',')}) VALUES (${qs.join(',')})`,vals);if(entity==='Review'&&!admin)await pool.query('INSERT INTO activity_logs (id,created_date,updated_date,user_email,user_name,actor_role,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?,?,?,?,?)',[id('activitylog'),record.created_date,record.created_date,req.user.email||null,req.user.full_name||req.user.name||'Guest',getActorRole(req.user),'Submitted Review','Review',record.id,`Submitted a review for booking ${record.booking_reference||record.booking_id}.`]);const [r]=await pool.query(`SELECT * FROM \`${table}\` WHERE id=? LIMIT 1`,[record.id]);return res.status(201).json(deserialize(cfg,r[0]||record));}
-if(['PATCH','PUT'].includes(method)){const rid=String(req.query.id||'');if(!rid)return res.status(422).json({error:'Missing entity id.'});const [existing]=await pool.query(`SELECT * FROM \`${table}\` WHERE id=? LIMIT 1`,[rid]);if(!existing[0])return res.status(404).json({error:'Record not found.'});if(entity==='User'){const userPatch=req.body||{};if('role' in userPatch||'app_role' in userPatch)return res.status(403).json({error:'User roles are fixed when the account is created.'});if(String(existing[0].id)===String(req.user.id)&&userPatch.disabled===true)return res.status(403).json({error:'You cannot archive your own admin account.'});if('disabled' in userPatch&&typeof userPatch.disabled!=='boolean')return res.status(422).json({error:'Account status must be true or false.'});if(!isSuperAdminUser(req.user)){if([existing[0].role,existing[0].app_role].includes('admin'))return res.status(403).json({error:'Only a super admin can manage admin accounts.'});if([existing[0].role,existing[0].app_role].includes('super_admin'))return res.status(403).json({error:'Only a super admin can manage super admin accounts.'});const allowedUserFields=new Set(['disabled']);if(Object.keys(userPatch).some(key=>!allowedUserFields.has(key)))return res.status(403).json({error:'Admins can only change account status.'});}}if(!admin){if(entity!=='Booking'||String(existing[0].customer_email).toLowerCase()!==String(req.user?.email||'').toLowerCase())return res.status(403).json({error:'Forbidden.'});const patch=req.body||{};const allowed=new Set(['status']);if(Object.keys(patch).some(key=>!allowed.has(key))||(patch.status&&patch.status!=='cancelled')||(patch.rebooking_status&&patch.rebooking_status!=='requested'))return res.status(403).json({error:'Forbidden.'});}const record={...existing[0],...(req.body||{}),updated_date:now()};await validate(entity,record,rid);const updates=[],vals=[];for(const f of fields)if(f!=='id'&&Object.prototype.hasOwnProperty.call(req.body||{},f)){updates.push(`\`${f}\`=?`);vals.push(serialize(cfg,f,req.body[f]));}updates.push('updated_date=?');vals.push(record.updated_date,rid);await pool.query(`UPDATE \`${table}\` SET ${updates.join(',')} WHERE id=?`,vals);const [r]=await pool.query(`SELECT * FROM \`${table}\` WHERE id=? LIMIT 1`,[rid]);return res.json(deserialize(cfg,r[0]));}
+if(['PATCH','PUT'].includes(method)){const rid=String(req.query.id||'');if(!rid)return res.status(422).json({error:'Missing entity id.'});const [existing]=await pool.query(`SELECT * FROM \`${table}\` WHERE id=? LIMIT 1`,[rid]);if(!existing[0])return res.status(404).json({error:'Record not found.'});if(entity==='User'){const userPatch=req.body||{};if('role' in userPatch||'app_role' in userPatch)return res.status(403).json({error:'User roles are fixed when the account is created.'});if(String(existing[0].id)===String(req.user.id)&&userPatch.disabled===true)return res.status(403).json({error:'You cannot archive your own admin account.'});if('disabled' in userPatch&&typeof userPatch.disabled!=='boolean')return res.status(422).json({error:'Account status must be true or false.'});if(!isSuperAdminUser(req.user)){if([existing[0].role,existing[0].app_role].includes('admin'))return res.status(403).json({error:'Only a super admin can manage admin accounts.'});if([existing[0].role,existing[0].app_role].includes('super_admin'))return res.status(403).json({error:'Only a super admin can manage super admin accounts.'});const allowedUserFields=new Set(['disabled']);if(Object.keys(userPatch).some(key=>!allowedUserFields.has(key)))return res.status(403).json({error:'Admins can only change account status.'});}}if(!admin){if(entity!=='Booking'||String(existing[0].customer_email).toLowerCase()!==String(req.user?.email||'').toLowerCase())return res.status(403).json({error:'Forbidden.'});const patch=req.body||{};const allowed=new Set(['status']);if(Object.keys(patch).some(key=>!allowed.has(key))||(patch.status&&patch.status!=='cancelled')||(patch.rebooking_status&&patch.rebooking_status!=='requested'))return res.status(403).json({error:'Forbidden.'});}const record={...existing[0],...(req.body||{}),updated_date:now()};const changedFields=new Set(Object.keys(req.body||{}));await validate(entity,record,rid,pool,changedFields);const updates=[],vals=[];for(const f of fields)if(f!=='id'&&Object.prototype.hasOwnProperty.call(req.body||{},f)){updates.push(`\`${f}\`=?`);vals.push(serialize(cfg,f,record[f]));}updates.push('updated_date=?');vals.push(record.updated_date,rid);await pool.query(`UPDATE \`${table}\` SET ${updates.join(',')} WHERE id=?`,vals);const [r]=await pool.query(`SELECT * FROM \`${table}\` WHERE id=? LIMIT 1`,[rid]);return res.json(deserialize(cfg,r[0]));}
 if(method==='DELETE'){if(!admin)return res.status(403).json({error:'Forbidden.'});const rid=String(req.query.id||'');if(!rid)return res.status(422).json({error:'Missing entity id.'});await pool.query(`DELETE FROM \`${table}\` WHERE id=?`,[rid]);return res.json({success:true,id:rid});}return res.status(405).json({error:'Method not allowed.'});}catch(e){next(e);}}
 function cryptoRandom(n){return require('crypto').randomBytes(n).toString('hex').toUpperCase().slice(0,8);}
 function dateOnly(value){return value instanceof Date?value.toISOString().slice(0,10):String(value||'').slice(0,10);}
