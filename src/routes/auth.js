@@ -1947,6 +1947,24 @@ router.post('/', async (req, res, next) => {
           'COMMIT'
         );
 
+        const escapeHtml = (value) => String(value || '').replace(/[&<>"']/g, (character) => ({
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#39;'
+        })[character]);
+
+        await sendMail(
+          pending.email,
+          'Welcome to Kasa Ilaya Resort!',
+          `<p>Hello ${escapeHtml(pending.full_name || 'there')},</p>
+           <p>Thank you for creating an account with Kasa Ilaya Resort. Your email is verified and your account is ready.</p>
+           <p>Welcome! You can now explore our packages and manage your resort bookings with your new account.</p>
+           <p>We look forward to welcoming you to Kasa Ilaya Resort.</p>`,
+          'registration'
+        );
+
         const user =
           await findUserById(userId);
 
