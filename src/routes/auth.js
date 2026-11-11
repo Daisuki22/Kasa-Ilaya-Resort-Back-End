@@ -1311,16 +1311,10 @@ router.post('/', async (req, res, next) => {
 
     if (action === 'register') {
 
-      let fullName =
-        String(p.full_name || '').trim() ||
-        [
-          p.first_name,
-          p.middle_name,
-          p.last_name
-        ]
-          .filter(Boolean)
-          .join(' ')
-          .trim();
+      const firstName = String(p.first_name || '').trim();
+      const middleName = String(p.middle_name || '').trim();
+      const lastName = String(p.last_name || '').trim();
+      const fullName = [firstName, middleName, lastName].filter(Boolean).join(' ').trim();
 
       const email = String(p.email || '')
         .trim()
@@ -1337,6 +1331,8 @@ router.post('/', async (req, res, next) => {
       ).trim();
 
       if (
+        !firstName ||
+        !lastName ||
         !fullName ||
         !email ||
         !phone ||
@@ -1344,8 +1340,15 @@ router.post('/', async (req, res, next) => {
       ) {
         return res.status(422).json({
           error:
-            'Full name, email, phone number, and password are required.'
+            'First name, last name, email, phone number, birthday, and password are required.'
         });
+      }
+
+      if (firstName.length < 2 || firstName.length > 100 || lastName.length < 2 || lastName.length > 100) {
+        return res.status(422).json({ error: 'First name and last name must each be between 2 and 100 characters.' });
+      }
+      if (middleName.length > 100) {
+        return res.status(422).json({ error: 'Middle name must be 100 characters or fewer.' });
       }
 
       if (fullName.length > 120) {
