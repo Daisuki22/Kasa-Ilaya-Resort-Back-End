@@ -1091,8 +1091,12 @@ router.post('/', async (req, res, next) => {
         const birthDate = String(
           p.birth_date || ''
         ).trim();
+        const firstName = String(p.first_name || '').trim();
+        const lastName = String(p.last_name || '').trim();
+        const phone = String(p.phone || '').trim();
+        const password = String(p.password || '');
 
-        if (!birthDate) {
+        if (!birthDate || !firstName || !lastName || !phone || !password) {
           if (isRedirectFlow) {
             res.cookie(PENDING_GOOGLE_SIGNUP_COOKIE, credential, pendingGoogleCookieOptions());
             res.cookie(
@@ -1103,9 +1107,16 @@ router.post('/', async (req, res, next) => {
             return redirectGoogleLogin(req, res, 'signup_required');
           }
           return res.status(403).json({
-            error: 'Birthday and phone number are required to finish setting up your Google account.',
+            error: 'Complete the required details to finish setting up your Google account.',
             code: 'google_signup_details_required'
           });
+        }
+
+        if (firstName.length > 100 || lastName.length > 100) {
+          return res.status(422).json({ error: 'First name and last name must be 100 characters or fewer.' });
+        }
+        if (!isStrongPassword(password)) {
+          return res.status(422).json({ error: 'Password must have at least 10 characters, uppercase and lowercase letters, a number, and a special character.' });
         }
 
         if (!validDateOnly(birthDate)) {
@@ -1118,7 +1129,7 @@ router.post('/', async (req, res, next) => {
 
         if (age === null) {
           return res.status(403).json({
-            error: 'Birthday and phone number are required to finish setting up your Google account.',
+            error: 'Complete the required details to finish setting up your Google account.',
             code: 'google_signup_details_required'
           });
         }
@@ -1136,10 +1147,9 @@ router.post('/', async (req, res, next) => {
           });
         }
 
-        const phone = String(p.phone || '').trim();
         if (!phone) {
           return res.status(403).json({
-            error: 'Birthday and phone number are required to finish setting up your Google account.',
+            error: 'Complete the required details to finish setting up your Google account.',
             code: 'google_signup_details_required'
           });
         }
@@ -1149,20 +1159,7 @@ router.post('/', async (req, res, next) => {
           });
         }
 
-        const fullName =
-          String(
-            googleUser.name ||
-              [
-                googleUser.given_name,
-                googleUser.family_name
-              ]
-                .filter(Boolean)
-                .join(' ') ||
-              email.split('@')[0]
-          ).trim();
-        if (!fullName || fullName.length > 191) {
-          return res.status(422).json({ error: 'Google account name must be 191 characters or fewer.' });
-        }
+        const fullName = `${firstName} ${lastName}`.trim();
 
         let profileImageUrl = String(p.profile_image_url || '').trim() || null;
         if (profileImageUrl && (
@@ -1184,6 +1181,7 @@ router.post('/', async (req, res, next) => {
         }
 
         const n = now();
+        const passwordHash = await bcrypt.hash(password, 12);
 
         try {
           await pool.query(
@@ -1216,7 +1214,7 @@ router.post('/', async (req, res, next) => {
               phone.replace(/\D/g, ''),
               profileImageUrl,
               'guest',
-              null,
+              passwordHash,
               0,
               1,
               'local-kasa-ilaya',
